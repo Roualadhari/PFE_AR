@@ -1,0 +1,215 @@
+import os
+import shutil
+import cv2
+import fitz  # PyMuPDF
+import easyocr
+import json
+import warnings
+import re
+
+warnings.filterwarnings("ignore")
+
+# ==========================================
+# 1. THE TEXT CLEANER (ACCENTS, TYPOS, NUMBERS)
+# ==========================================
+def clean_extracted_text(text):
+    if not isinstance(text, str):
+        return str(text)
+    
+    # 1. Eliminate punctuation noise (quotes) and turn semicolons into spaces
+    text = text.replace("'", "").replace('"', "").replace(";", " ")
+    
+    # 2. Fix weird OCR characters while keeping real accents safe
+    weird_characters = {'ë': 'e', 'Ë': 'E', 'ü': 'u', 'Ü': 'U'}
+    for bad_char, good_char in weird_characters.items():
+        text = text.replace(bad_char, good_char)
+
+    # 3. Fix specific typos
+    common_typos = {
+        "Qte": "Qté",
+        "Qtë": "Qté",
+        "Stock:Fin": "Stock Fin",
+        "Codë Prodüit": "Code Produit",
+    }
+    for bad_word, good_word in common_typos.items():
+        text = text.replace(bad_word, good_word)
+        
+    # 4. Rescue Minus Signs and clean stray characters attached to numbers
+    # Hunts down ~66, v-66, _66 and turns them into -66
+    text = re.sub(r'^[vV~_=]+-?(\d+)', r'-\1', text.strip()) 
+    text = re.sub(r'^[\{\[\(](\d+)', r'\1', text)
+    
+    # 5. Rescue standalone Zeros (OCR sometimes reads '0' as the letter 'O')
+    if text.strip().upper() in ['O', 'Q']:
+        text = '0'
+        
+    return " ".join(text.split())
+
+def is_mostly_numeric(s):
+    """Helper to determine if a string is a quantity/number vs a product name"""
+    # Allow minus signs, spaces, and decimals in numbers
+    clean_s = s.replace(' ', '').replace(',', '').replace('.', '').replace('-', '')
+    if len(clean_s) == 0: return False
+    digits = sum(c.isdigit() for c in clean_s)
+    return digits >= len(clean_s) * 0.5 # If it's mostly digits, it's a number column
+
+def clean_image(image_path, output_path):
+    img = cv2.imread(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    clean_img = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+    )
+    cv2.imwrite(output_path, clean_img)
+    return img.shape 
+
+# ==========================================
+# 2. MAIN PROCESSING LOOP
+# ==========================================
+def process_inbox_to_rich_json(inbox_folder, images_folder, json_folder, archive_folder):
+    print("🚀 Starting Ultra-Smart Table Extraction...")
+    
+    reader = easyocr.Reader(['fr', 'en'])
+    incoming_files = [f for f in os.listdir(inbox_folder) if os.path.isfile(os.path.join(inbox_folder, f))]
+
+    if not incoming_files:
+        print("📭 The inbox is empty.")
+        return
+
+    table_triggers = ["code", "produit", "qté", "qte", "quantité", "prix", "montant", "total", "désignation", "article", "description"]
+
+    for file_name in incoming_files:
+        file_path = os.path.join(inbox_folder, file_name)
+        base_name = os.path.splitext(file_name)[0]
+        print(f"\n➡️ Processing: {file_name}")
+        
+        doc_data = {
+            "metadata": {"filename": file_name},
+            "document_type": "Factures / Statistiques", 
+            "header_info": [],
+            "table_data": []
+        }
+
+        # Convert to Images
+        temp_images = []
+        if file_path.lower().endswith('.pdf'):
+            doc = fitz.open(file_path)
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(dpi=300)
+                temp_img_path = f"temp_raw_{base_name}_{i}.jpg"
+                pix.save(temp_img_path)
+                temp_images.append(temp_img_path)
+            doc.close()
+        elif file_path.lower().endswith(('.png', '.jpg', '.jpeg')):
+            temp_img_path = f"temp_raw_{base_name}.jpg"
+            shutil.copy(file_path, temp_img_path)
+            temp_images.append(temp_img_path)
+
+        # Process each page
+        for i, raw_img in enumerate(temp_images):
+            cleaned_img_name = f"{base_name}_page_{i+1}_cleaned.jpg" if len(temp_images) > 1 else f"{base_name}_cleaned.jpg"
+            cleaned_img_path = os.path.join(images_folder, cleaned_img_name)
+            
+            height, width, _ = clean_image(raw_img, cleaned_img_path)
+            print(f"   👁️ Extracting and aligning text on Page {i+1}...")
+            raw_results = reader.readtext(cleaned_img_path, detail=1)
+            
+            text_blocks = []
+            for bbox, text, conf in raw_results:
+                clean_text = clean_extracted_text(text)
+                
+                if len(clean_text.strip()) == 0: 
+                    continue
+                
+                y_center = (bbox[0][1] + bbox[2][1]) / 2
+                x_center = (bbox[0][0] + bbox[1][0]) / 2
+                text_blocks.append({"text": clean_text, "y": y_center, "x": x_center})
+            
+            text_blocks.sort(key=lambda b: b['y'])
+            
+            # Group into rows
+            rows = []
+            current_row = []
+            y_tolerance = height * 0.012 
+            last_y = None
+            
+            for block in text_blocks:
+                if last_y is None or abs(block['y'] - last_y) < y_tolerance:
+                    current_row.append(block)
+                    if last_y is None: last_y = block['y']
+                else:
+                    current_row.sort(key=lambda b: b['x'])
+                    rows.append(current_row)
+                    current_row = [block]
+                    last_y = block['y']
+                    
+            if current_row:
+                current_row.sort(key=lambda b: b['x'])
+                rows.append(current_row)
+
+            # SMART HEADER/TABLE SPLITTING
+            is_table_started = False
+            
+            for row in rows:
+                row_texts = [b['text'] for b in row]
+                row_combined_lower = " ".join(row_texts).lower()
+                
+                if not is_table_started:
+                    if any(trigger in row_combined_lower for trigger in table_triggers):
+                        is_table_started = True
+                    elif len(row) >= 3 and any(is_mostly_numeric(b) for b in row_texts):
+                        is_table_started = True
+                
+                if not is_table_started:
+                    doc_data["header_info"].append(" ".join(row_texts))
+                else:
+                    # ✨ NEW: SMART COLUMN MERGING ✨
+                    # Joins shattered text strings into a single "Product" column
+                    if len(row_texts) > 1 and "Code" not in row_combined_lower:
+                        merged_row = [row_texts[0]] # Always keep the Code separate
+                        product_name_parts = []
+                        
+                        for item in row_texts[1:]:
+                            if is_mostly_numeric(item):
+                                if product_name_parts:
+                                    merged_row.append(" - ".join(product_name_parts))
+                                    product_name_parts = []
+                                merged_row.append(item)
+                            else:
+                                product_name_parts.append(item)
+                                
+                        if product_name_parts:
+                            merged_row.append(" - ".join(product_name_parts))
+                            
+                        doc_data["table_data"].append(merged_row)
+                    else:
+                        doc_data["table_data"].append(row_texts)
+                    
+            os.remove(raw_img)
+
+        # Save Output
+        json_filename = f"{base_name}_data.json"
+        json_filepath = os.path.join(json_folder, json_filename)
+        
+        with open(json_filepath, 'w', encoding='utf-8') as json_file:
+            json.dump(doc_data, json_file, ensure_ascii=False, indent=4)
+            
+        print(f"   💾 Saved structured JSON to: {json_filename}")
+        shutil.move(file_path, os.path.join(archive_folder, file_name))
+
+    print("\n✅ Extraction Complete!")
+
+if __name__ == "__main__":
+    INBOX = "inbox"                       
+    IMAGES_OUT = "processed_images"       
+    JSON_OUT = "json_outputs"             
+    ARCHIVE = "archive_originals"         
+    
+    for folder in [INBOX, IMAGES_OUT, JSON_OUT, ARCHIVE]:
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+            
+    process_inbox_to_rich_json(INBOX, IMAGES_OUT, JSON_OUT, ARCHIVE)
+
+
+
+gzapharma
