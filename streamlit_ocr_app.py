@@ -104,7 +104,7 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════════════════
 
 def fix_rotation(img_bgr: np.ndarray) -> np.ndarray:
-    """Stage 1: OSD for 90/180/270 flips. Stage 2: tiny fine skew only."""
+    """Stage 1: OSD for 90/180/270 flips. Stage 2: fine skew via Hough lines."""
     try:
         gray_temp = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         osd = pytesseract.image_to_osd(
@@ -115,38 +115,94 @@ def fix_rotation(img_bgr: np.ndarray) -> np.ndarray:
         confidence = float(conf_m.group(1)) if conf_m else 0.0
         if angle_m and confidence >= 2.0:
             a = int(angle_m.group(1))
-            if a == 90:   img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            if a == 90:    img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
             elif a == 180: img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_180)
             elif a == 270: img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_90_CLOCKWISE)
     except Exception:
         pass
 
-    # Fine skew: only apply for angles between 0.3° and 3°
-    gray   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    coords = np.column_stack(np.where(gray < 200))
-    if len(coords) >= 500:
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45: angle = 90 + angle
-        if 0.3 <= abs(angle) <= 3.0:
-            h, w = gray.shape
-            M = cv2.getRotationMatrix2D((w//2, h//2), angle, 1.0)
-            img_bgr = cv2.warpAffine(img_bgr, M, (w, h),
-                                     flags=cv2.INTER_CUBIC,
-                                     borderMode=cv2.BORDER_REPLICATE)
+    # Fine skew correction using Hough lines — handles angles from 0.05° to 10°
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    try:
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100,
+                                minLineLength=img_bgr.shape[1] // 4,
+                                maxLineGap=20)
+        if lines is not None and len(lines) >= 3:
+            angles = []
+            for ln in lines:
+                x1, y1, x2, y2 = ln[0]
+                if x2 != x1:
+                    a = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                    if abs(a) < 15:          # only near-horizontal lines
+                        angles.append(a)
+            if len(angles) >= 3:
+                median_angle = float(np.median(angles))
+                if 0.05 <= abs(median_angle) <= 10.0:
+                    h, w = img_bgr.shape[:2]
+                    M = cv2.getRotationMatrix2D((w // 2, h // 2), median_angle, 1.0)
+                    img_bgr = cv2.warpAffine(img_bgr, M, (w, h),
+                                             flags=cv2.INTER_CUBIC,
+                                             borderMode=cv2.BORDER_REPLICATE)
+    except Exception:
+        pass
     return img_bgr
 
 
 def erase_colored_ink(img_bgr: np.ndarray) -> np.ndarray:
-    """Fade colored ink to gray, but keep dark digits inside colored regions."""
+    """Fade colored ink to gray, keep dark digits inside colored regions.
+    Additionally, darken digits/numbers inside circled or highlighted regions
+    so they remain readable after blob-filter processing."""
     hsv    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     gray   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     result = img_bgr.copy()
-    color_mask = cv2.inRange(hsv, np.array([0,25,40]), np.array([180,255,255]))
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+
+    # --- standard colored-ink erasure ---
+    color_mask = cv2.inRange(hsv, np.array([0, 25, 40]), np.array([180, 255, 255]))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     color_mask = cv2.dilate(color_mask, k, iterations=1)
     dark = (gray < 100)
     result[(color_mask > 0) & ~dark] = [230, 230, 230]
-    result[(color_mask > 0) & dark]  = [0, 0, 0]
+    result[(color_mask > 0) &  dark] = [0, 0, 0]
+
+    # --- darken circled / highlighted numbers ---
+    # Build a foreground (colored-blob) mask and find circular/oval contours
+    try:
+        fg = cv2.inRange(hsv, np.array([0, 40, 80]), np.array([180, 255, 255]))
+        # Remove tiny specks
+        fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        # Close gaps inside circles
+        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+        contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 50 or area > 30000:
+                continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect = w / (h + 1e-5)
+            # A circle or oval has aspect ratio near 1 and circularity > 0.4
+            peri = cv2.arcLength(cnt, True)
+            circularity = 4 * np.pi * area / (peri * peri + 1e-5)
+            is_circle = (0.4 <= aspect <= 2.5) and (circularity > 0.35)
+            # Highlighted rectangles: wider aspect, high saturation fill
+            is_highlight = (aspect > 1.5) and (w > 10) and (h < 60)
+            if is_circle or is_highlight:
+                pad = 4
+                rx1, ry1 = max(0, x - pad), max(0, y - pad)
+                rx2, ry2 = min(result.shape[1], x + w + pad), min(result.shape[0], y + h + pad)
+                roi_gray = gray[ry1:ry2, rx1:rx2]
+                # threshold to get dark pixels (digits inside the circle)
+                _, dark_px = cv2.threshold(roi_gray, 0, 255,
+                                           cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                # Darken only those pixels extremely (set to pure black)
+                roi = result[ry1:ry2, rx1:rx2]
+                roi[dark_px > 0] = [0, 0, 0]
+                result[ry1:ry2, rx1:rx2] = roi
+    except Exception:
+        pass
+
     return result
 
 
@@ -246,23 +302,33 @@ def ocr_full_page(clean_img: np.ndarray) -> str:
 
 def ocr_header_zone(clean_img: np.ndarray) -> str:
     """
-    OCR only the top 25% of the image (header zone).
-    Uses --psm 4 (single column) which works better for header blocks.
+    OCR the top 40% of the image (header zone).
+    Runs three PSM passes and returns the longest result for best coverage
+    of company name, address, phone, email, fax, RC, MF, etc.
     """
     h = clean_img.shape[0]
-    header_zone = clean_img[:int(h * 0.25), :]
-    return pytesseract.image_to_string(
-        header_zone, lang="fra+eng", config="--psm 4 --oem 1"
-    ).strip()
+    header_zone = clean_img[:int(h * 0.40), :]
+    results = []
+    for psm in ("4", "6", "3"):
+        try:
+            t = pytesseract.image_to_string(
+                header_zone, lang="fra+eng",
+                config=f"--psm {psm} --oem 1"
+            ).strip()
+            results.append(t)
+        except Exception:
+            pass
+    # pick the result with most characters (most complete)
+    return max(results, key=len) if results else ""
 
 
 def ocr_body_zone(clean_img: np.ndarray) -> str:
     """
-    OCR only the body (25%-90% of image height) — the table area.
+    OCR the body (38%-92% of image height) — the table area.
     Uses --psm 6 (uniform block) which is best for tables.
     """
     h = clean_img.shape[0]
-    body_zone = clean_img[int(h * 0.22):int(h * 0.92), :]
+    body_zone = clean_img[int(h * 0.38):int(h * 0.92), :]
     return pytesseract.image_to_string(
         body_zone, lang="fra+eng", config="--psm 6 --oem 1"
     ).strip()
@@ -280,15 +346,31 @@ def clean_ocr_text(text: str) -> str:
     # Fix l/I between digits → 1
     text = re.sub(r'(?<=\d)l(?=\d)', '1', text)
     text = re.sub(r'(?<=\d)I(?=\d)', '1', text)
+    # Fix O between digits → 0
+    text = re.sub(r'(?<=\d)O(?=\d)', '0', text)
+    text = re.sub(r'(?<=\d)o(?=\d)', '0', text)
     # Fix degree sign used as 0
     text = re.sub(r'(\d)°o', r'\g<1>0', text)
     text = re.sub(r'(\d)°(?=\d)', r'\g<1>0', text)
+    # Fix S→5 or 5→S confusion between digits
+    text = re.sub(r'(?<=\d)S(?=\d)', '5', text)
+    # Fix B→8 between digits
+    text = re.sub(r'(?<=\d)B(?=\d)', '8', text)
+    # Fix Z→2 between digits
+    text = re.sub(r'(?<=\d)Z(?=\d)', '2', text)
+    # Fix G→6 between digits
+    text = re.sub(r'(?<=\d)G(?=\d)', '6', text)
     # Remove stray border pipes
     text = re.sub(r'(?<=[A-Za-z0-9])\|(?=[A-Za-z0-9])', ' ', text)
     text = re.sub(r'^\s*\|\s*$', '', text, flags=re.MULTILINE)
     # Title restorations
     text = re.sub(r'(?i)\b(on de commande)\b', 'Bon de commande', text)
     text = re.sub(r'(?i)\b(on de livraison)\b', 'Bon de livraison', text)
+    # Normalize common field labels so regex can find them
+    text = re.sub(r'(?i)\bM\.?F\.?\b', 'M.F.', text)
+    text = re.sub(r'(?i)\bB[-.]?C\.?\b(?=\s*[:\-N°])', 'Bon de commande', text)
+    text = re.sub(r'(?i)\bT\.?E\.?L\.?\b(?=\s*[:\-])', 'Tel:', text)
+    text = re.sub(r'(?i)\bAdd\.?\s*:', 'Adresse:', text)
     # Clean noise
     text = re.sub(r'[=~_—]{2,}', ' ', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
@@ -310,30 +392,62 @@ def clean_ocr_text(text: str) -> str:
 # TABLE EXTRACTION — pdfplumber (for native PDFs)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def extract_tables_pdfplumber(pdf_path: str) -> list[list]:
+def extract_tables_pdfplumber(pdf_path: str) -> list:
     """
     Uses pdfplumber to extract structured tables from native PDFs.
-    Returns a list of tables, each table is a list of rows.
-    Much more accurate than OCR for native PDFs since it reads
-    the actual PDF vector data, not an image of it.
+    Tries "lines" strategy first; falls back to "text" strategy.
+    On each page, tables are sorted top-to-bottom / left-to-right so the
+    main product table (which always starts at the top-left of the data area)
+    appears first.  All rows (including header) are preserved; only fully
+    blank rows are dropped.
     """
     all_tables = []
+
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            tables = page.extract_tables({
-                "vertical_strategy":   "lines",
-                "horizontal_strategy": "lines",
+            # ── Strategy 1: explicit drawn lines ────────────────────────────
+            raw_tables = page.find_tables({
+                "vertical_strategy":      "lines",
+                "horizontal_strategy":    "lines",
                 "intersection_tolerance": 5,
+                "snap_tolerance":         4,
+                "join_tolerance":         4,
             })
-            for table in (tables or []):
-                # Clean empty rows and None cells
+            # ── Strategy 2: text alignment ───────────────────────────────────
+            if not raw_tables:
+                raw_tables = page.find_tables({
+                    "vertical_strategy":      "text",
+                    "horizontal_strategy":    "text",
+                    "intersection_tolerance": 10,
+                })
+
+            if not raw_tables:
+                continue
+
+            # Sort tables top→bottom then left→right so we always start
+            # from the first (header) table at the top-left of the page.
+            raw_tables = sorted(raw_tables,
+                                key=lambda t: (t.bbox[1], t.bbox[0]))  # (top, left)
+
+            for tbl_obj in raw_tables:
+                table = tbl_obj.extract()
+                if not table:
+                    continue
+
+                # Consistent column count = widest row
+                ncols = max(len(row) for row in table)
                 clean = []
                 for row in table:
-                    r = [str(cell or '').strip() for cell in row]
-                    if any(c for c in r):  # skip fully empty rows
-                        clean.append(r)
+                    padded = list(row) + [''] * (ncols - len(row))
+                    r = [str(cell or '').strip() for cell in padded]
+                    # Only skip rows where every cell is empty
+                    if not any(c for c in r):
+                        continue
+                    clean.append(r)
+
                 if clean:
                     all_tables.append(clean)
+
     return all_tables
 
 
@@ -349,12 +463,15 @@ def detect_pdf_native(pdf_path: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════
 
 DOC_TYPES = {
-    "Proforma":         ["proforma", "b.c. interne", "incoterms", "date/heure livraison"],
-    "Bon de Commande":  ["bon de commande", "commande fournisseur", "bcn-", "bc n°"],
-    "Facture":          ["facture", "invoice", "facture numéro"],
-    "Statistiques":     ["statistique", "quantitatif des ventes", "stat. ventes",
-                         "quantité proposée", "moyenne des ventes"],
-    "Chiffre d'Affaires": ["chiffre d'affaire", "ventes et chiffre"],
+    "Proforma":            ["proforma", "b.c. interne", "incoterms", "date/heure livraison"],
+    "Bon de Commande":     ["bon de commande", "commande fournisseur", "bcn-", "bc n°",
+                            "b-c", "b.c.", "bdc"],
+    "Facture":             ["facture", "invoice", "facture numéro", "facture n°"],
+    "Statistiques":        ["statistique", "quantitatif des ventes", "stat. ventes",
+                            "quantité proposée", "moyenne des ventes"],
+    "Chiffre d'Affaires":  ["chiffre d'affaire", "ventes et chiffre"],
+    "Bon de Livraison":    ["bon de livraison", "bdl", "livraison n°"],
+    "Avoir":               ["avoir", "note de crédit", "note de credit"],
 }
 
 def detect_doc_type(text: str) -> str:
@@ -366,7 +483,8 @@ def detect_doc_type(text: str) -> str:
 
 
 def extract_info(text: str) -> dict:
-    """Extract structured fields using regex on the full OCR text."""
+    """Extract structured fields using regex on the full OCR text.
+    Handles many abbreviations: MF, M.F, B-C, BC, Add, Tel, TEL, Email, etc."""
     info = {}
 
     # Document type
@@ -380,47 +498,116 @@ def extract_info(text: str) -> dict:
         r'Facture\s+num[eé]ro\s+([0-9\s]{3,15})',
         r'\b(BCN-\d{2}-\d{4})\b',
         r'\b(BCM?-\d{2}-\d{4})\b',
+        r'Bon\s+de\s+commande\s+N[°o]?[:\s]*([\d/\-A-Z]{3,20})',
         r'N[°o][:\s]*([A-Z0-9\-]{4,20})',
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
-            num = re.sub(r'\s+','', m.group(1)).strip(".,;:")
+            num = re.sub(r'\s+', '', m.group(1)).strip('.,;:')
             if len(num) >= 3:
                 info["numero"] = num
                 break
 
-    # Date
-    m = re.search(r'Date\s*[:\-]?\s*(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4})', text, re.I)
+    # Date  — prefer labelled date, then any DD/MM/YYYY
+    m = re.search(r'(?:Date|Dat[ée]e?)[\s:/-]*?(\d{1,2}[/\-.\\]\d{1,2}[/\-.\\]\d{2,4})',
+                  text, re.I)
     if not m:
         m = re.search(r'\b(\d{2}[/\-\.]\d{2}[/\-\.]\d{4})\b', text)
-    if m: info["date"] = m.group(1)
+    if m:
+        info["date"] = m.group(1)
 
-    # Matricule fiscal
+    # Matricule fiscal / MF — strict Tunisian format ONLY:
+    #   NNNNNNN X / X / X / NNN   (6-7 digits, then 3 uppercase letters, then 3 digits)
+    #   Separators between letters may be "/", "|", "\\", a space, or nothing at all.
+    #   Examples: 1234567A/P/M/000  |  0012345APM000  |  1234567 A P M 000
+    mf_label = (
+        r'(?:'
+        r'M\.?F\.?|Matr\.?\s*Fiscal|Matricule\s*Fiscal|'
+        r'Code\s*TVA|N[°o]?\s*TVA|MFCOD|ID\s*Fiscal|Fiscal\s*N[°o]?'
+        r')'
+    )
+    # sep = optional separator between the three letters
+    _sep = r'[/\\|\s]?'
     for pat in [
-        r'(?:Code\s*TVA|M\.?F\.?)\s*[:\-]?\s*(\d{6,7}\s*[A-Z]\s*[/\s][A-Z]\s*[/\s][A-Z]\s*[/\s]\d{3})',
-        r'\b(\d{6,7}[A-Z][/\\|][A-Z][/\\|][A-Z][/\\|]\d{3})\b',
-        r'\b(\d{6,7}[A-Z]{3}\d{3})\b',
+        # Labelled — spaces allowed inside the value
+        mf_label + r'\s*[:\-]?\s*(\d{6,7}\s*[A-Z]' + _sep + r'[A-Z]' + _sep + r'[A-Z]' + _sep + r'\d{3})\b',
+        # Unlabelled — compact form (no surrounding spaces needed)
+        r'\b(\d{6,7}[A-Z]' + _sep + r'[A-Z]' + _sep + r'[A-Z]' + _sep + r'\d{3})\b',
     ]:
         m = re.search(pat, text, re.I)
         if m:
-            val = re.sub(r'\s+','', m.group(1)).replace('\\','/').replace('|','/')
-            info["matricule_fiscal"] = val
-            break
+            val = m.group(1).strip()
+            # Normalise to canonical X/X/X form
+            val = re.sub(r'[ \t]', '', val).replace('\\', '/').replace('|', '/')
+            # Must match the exact digit-letter-digit structure after compaction
+            if re.fullmatch(r'\d{6,7}[A-Z]/?[A-Z]/?[A-Z]/?\d{3}', val, re.I):
+                info["matricule_fiscal"] = val
+                break
 
-    # Tel / Fax
-    m = re.search(r'T[eé]l[:\.\s/]*(\d[\d\s\.\-]{6,14}\d)', text, re.I)
-    if m: info["tel"] = re.sub(r'[\s\.\-]','', m.group(1))
+    # Telephone / Tel — many label variants
+    tel_label = r'(?:T[eé]l[eé]?phone?|T[eé]l|TEL|T\.E\.L|Tél|Portable|Mobile|GSM|Phone)'
+    m = re.search(tel_label + r'[:\s./]*([\d][\d\s.\-]{6,14}\d)', text, re.I)
+    if not m:
+        # grab any 8-10 digit phone-like number
+        m = re.search(r'(?i)(?:tél|tel|phone)\s*[:\-]?\s*([+\d][\d\s.\-]{7,15})', text)
+    if m:
+        info["tel"] = re.sub(r'[\s.\-]', '', m.group(1))
 
-    m = re.search(r'Fax[:\.\s]*([\d][\d\s\.\-]{6,14}\d)', text, re.I)
-    if m: info["fax"] = re.sub(r'[\s\.\-]','', m.group(1))
+    # Fax
+    m = re.search(r'(?:Fax|FAX)[:\s./]*([\d][\d\s.\-]{6,14}\d)', text, re.I)
+    if m:
+        info["fax"] = re.sub(r'[\s.\-]', '', m.group(1))
 
-    # Email
-    m = re.search(r'[\w\.-]+@[\w\.-]+\.\w{2,}', text)
-    if m: info["email"] = m.group(0)
+    # Email — standard pattern, also after "Email:", "E-mail:", "Mail:"
+    m = re.search(r'(?:E[-\s]?mail|Email|Mail|Courriel)?\s*[:\-]?\s*([\w.+\-]+@[\w.\-]+\.[a-z]{2,6})',
+                  text, re.I)
+    if m:
+        info["email"] = m.group(1)
+
+    # Address / Adresse / Add  — labelled form
+    m = re.search(r'(?:Adresse|Address|Add\.?|Adr\.?)[:\s]*(.+?)(?:\n|Tel|T[eé]l|M\.?F|Fax|Email|RC\b|$)',
+                  text, re.I | re.DOTALL)
+    if m:
+        addr = re.sub(r'\s+', ' ', m.group(1)).strip().rstrip('.,;')
+        if len(addr) >= 5:
+            info["adresse"] = addr
+
+    # Address — implicit (no label): detect lines containing street/location keywords
+    if "adresse" not in info:
+        # Keywords that strongly suggest a street address line
+        street_kw = re.compile(
+            r'\b(?:Rue|Route|Avenue|Av\.?|Bd\.?|Boulevard|Cité|Zone\s+(?:Ind(?:ustrielle)?|Commerciale)?'
+            r'|Lotissement|Lot\.?\s|Quartier|Immeuble|Imm\.?|Résidence|Centre\s+Urbain'
+            r'|BP\s*\d|Km\s*\d|N°\s*\d|Bloc|Sis\b|Siège)'
+            r'',
+            re.IGNORECASE
+        )
+        # Walk through lines; join consecutive address-like lines (max 2)
+        text_lines = text.splitlines()
+        for li, line in enumerate(text_lines):
+            stripped = line.strip()
+            if not stripped or len(stripped) < 5:
+                continue
+            if street_kw.search(stripped):
+                # Try to grab this line + optionally the next non-empty line
+                parts = [stripped]
+                for nxt in text_lines[li + 1: li + 3]:
+                    ns = nxt.strip()
+                    # Stop if next line looks like a field label
+                    if re.match(r'(?:Tel|T[eé]l|Fax|Email|M\.?F|RC|Matricule)', ns, re.I):
+                        break
+                    if ns and len(ns) >= 4 and not re.search(r'(?:facture|commande|proforma|livraison)', ns, re.I):
+                        parts.append(ns)
+                        break
+                candidate = ', '.join(parts)
+                if len(candidate) >= 8:
+                    info["adresse"] = candidate
+                break
 
     # RC
     m = re.search(r'R\.?C\.?\s*[:\-]?\s*([A-Z][A-Z0-9]{5,14})', text, re.I)
-    if m: info["rc"] = m.group(1)
+    if m:
+        info["rc"] = m.group(1)
 
     # Totals
     for field, keywords in {
@@ -429,8 +616,11 @@ def extract_info(text: str) -> dict:
         "total_ttc": ["total ttc", "net à payer", "montant ttc"],
     }.items():
         for kw in keywords:
-            if kw in (" " + text.lower() + " "):
-                nums = re.findall(r'\d[\d,\.\s]{0,15}\d|\b\d{1,8}\b', text)
+            idx = (" " + text.lower() + " ").find(kw)
+            if idx >= 0:
+                # look for numbers after the keyword
+                snippet = text[max(0, idx - 1):idx + len(kw) + 80]
+                nums = re.findall(r'\d[\d,.\s]{0,15}\d|\b\d{1,8}\b', snippet)
                 if nums:
                     val = _to_float(nums[-1])
                     if val and 0.01 < val < 50_000_000:
@@ -553,8 +743,6 @@ with st.sidebar:
     show_json     = st.checkbox("Show Full JSON",         value=False)
 
     st.markdown("---")
-    st.markdown("**Page (for multi-page PDFs)**")
-    page_index = st.number_input("Page number", min_value=1, value=1, step=1) - 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -599,11 +787,9 @@ if uploaded and run_btn:
         is_native = detect_pdf_native(tmp_path)
         doc_fitz  = fitz.open(tmp_path)
         total_pages = len(doc_fitz)
-        pi = min(page_index, total_pages - 1)
 
         col_type, col_pages = st.columns([2, 1])
         with col_type:
-            tag = "native" if is_native else "scanned"
             color = "#7ee8a2" if is_native else "#e8c87e"
             st.markdown(f"""
             <div class='metric-card'>
@@ -620,55 +806,96 @@ if uploaded and run_btn:
             </div>""", unsafe_allow_html=True)
     else:
         is_native = False
-        pi = 0
         total_pages = 1
 
     st.markdown("---")
 
-    # ── Load image ─────────────────────────────────────────────────────
+    # ── Per-page preview: preprocess & display all pages ──────────────
+    # We collect cleaned images here for display AND later reuse in OCR loop
+    all_clean_imgs  = []   # list of preprocessed (binary) np arrays
+    all_orig_imgs   = []   # list of original BGR np arrays
+
     if is_pdf:
-        with st.spinner("Rendering page..."):
-            img_bgr = pdf_page_to_image(tmp_path, pi, dpi=300)
+        with st.spinner(f"Preprocessing all {total_pages} pages for preview..."):
+            for pg_i in range(total_pages):
+                pg_img = pdf_page_to_image(tmp_path, pg_i, dpi=300)
+                all_orig_imgs.append(pg_img)
+                w = pg_img.copy()
+                if use_fix_rotation: w = fix_rotation(w)
+                if use_erase_color:  w = erase_colored_ink(w)
+                g = cv2.cvtColor(w, cv2.COLOR_BGR2GRAY)
+                b = binarize(g)
+                if use_remove_lines: b = remove_long_lines(b)
+                if use_keep_mask:
+                    c_pg = enhance_kept_text(b, build_keep_mask(b))
+                else:
+                    c_pg = b
+                all_clean_imgs.append(c_pg)
     else:
         file_bytes = np.frombuffer(uploaded.getvalue(), dtype=np.uint8)
         img_bgr    = cv2.imdecode(file_bytes, 1)
-
-    # ── Show original ──────────────────────────────────────────────────
-    col_orig, col_clean = st.columns(2)
-    with col_orig:
-        st.markdown("**Original**")
-        st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), use_container_width=True)
-
-    # ── Preprocess ─────────────────────────────────────────────────────
-    with st.spinner("Preprocessing..."):
-        work = img_bgr.copy()
-        if use_fix_rotation: work = fix_rotation(work)
-        if use_erase_color:  work = erase_colored_ink(work)
-        gray   = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
-        binary = binarize(gray)
-        if use_remove_lines: binary = remove_long_lines(binary)
+        all_orig_imgs.append(img_bgr)
+        w = img_bgr.copy()
+        if use_fix_rotation: w = fix_rotation(w)
+        if use_erase_color:  w = erase_colored_ink(w)
+        g = cv2.cvtColor(w, cv2.COLOR_BGR2GRAY)
+        b = binarize(g)
+        if use_remove_lines: b = remove_long_lines(b)
         if use_keep_mask:
-            km     = build_keep_mask(binary)
-            clean  = enhance_kept_text(binary, km)
+            c_pg = enhance_kept_text(b, build_keep_mask(b))
         else:
-            clean  = binary
+            c_pg = b
+        all_clean_imgs.append(c_pg)
 
-    with col_clean:
-        st.markdown("**After Preprocessing**")
-        st.image(clean, use_container_width=True)
+    # Show page tabs
+    st.markdown("### 🖼️ Cleaned Pages Preview")
+    if total_pages == 1:
+        col_orig, col_clean = st.columns(2)
+        with col_orig:
+            st.markdown("**Original**")
+            st.image(cv2.cvtColor(all_orig_imgs[0], cv2.COLOR_BGR2RGB),
+                     use_container_width=True)
+        with col_clean:
+            st.markdown("**After Preprocessing**")
+            st.image(all_clean_imgs[0], use_container_width=True)
+    else:
+        tab_labels = [f"Page {i+1}" for i in range(total_pages)]
+        page_tabs  = st.tabs(tab_labels)
+        for i, tab in enumerate(page_tabs):
+            with tab:
+                col_orig, col_clean = st.columns(2)
+                with col_orig:
+                    st.markdown("**Original**")
+                    st.image(cv2.cvtColor(all_orig_imgs[i], cv2.COLOR_BGR2RGB),
+                             use_container_width=True)
+                with col_clean:
+                    st.markdown("**After Preprocessing**")
+                    st.image(all_clean_imgs[i], use_container_width=True)
 
     st.markdown("---")
 
-    # ── OCR ───────────────────────────────────────────────────────────
-    with st.spinner("Running OCR..."):
+    # ── OCR — reuse already-preprocessed images ──────────────────────
+    all_header_texts = []
+    all_body_texts   = []
+    progress_bar = st.progress(0, text="Running OCR...")
+
+    for pg_i, c_pg in enumerate(all_clean_imgs):
+        progress_bar.progress(
+            int((pg_i / len(all_clean_imgs)) * 100),
+            text=f"OCR page {pg_i + 1}/{len(all_clean_imgs)}..."
+        )
         if split_zones:
-            header_text = clean_ocr_text(ocr_header_zone(clean))
-            body_text   = clean_ocr_text(ocr_body_zone(clean))
-            full_text   = header_text + "\n" + body_text
+            all_header_texts.append(clean_ocr_text(ocr_header_zone(c_pg)))
+            all_body_texts.append(clean_ocr_text(ocr_body_zone(c_pg)))
         else:
-            full_text = clean_ocr_text(ocr_full_page(clean))
-            header_text = full_text
-            body_text   = full_text
+            ft = clean_ocr_text(ocr_full_page(c_pg))
+            all_header_texts.append(ft)
+            all_body_texts.append(ft)
+    progress_bar.progress(100, text="Done!")
+
+    header_text = "\n".join(all_header_texts)
+    body_text   = "\n".join(all_body_texts)
+    full_text   = header_text + "\n" + body_text
 
     # ── pdfplumber tables (native only) ───────────────────────────────
     plumber_tables = []
@@ -687,22 +914,26 @@ if uploaded and run_btn:
     # Document type badge
     dtype = extracted_info.get("type", "Document")
     tag_class = {"Bon de Commande": "tag-bc", "Proforma": "tag-proforma",
-                 "Facture": "tag-facture"}.get(dtype, "tag-stat")
+                 "Facture": "tag-facture",
+                 "Bon de Livraison": "tag-bc",
+                 "Avoir": "tag-stat"}.get(dtype, "tag-stat")
     st.markdown(f"<span class='{tag_class}'>{dtype}</span>", unsafe_allow_html=True)
     st.markdown("## 📋 Extracted Information")
 
-    # Info grid
+    # Info grid — include doc type as first card
     info_cols = st.columns(3)
     fields = [
-        ("Document N°",       extracted_info.get("numero",           "—")),
-        ("Date",              extracted_info.get("date",             "—")),
-        ("Matricule Fiscal",  extracted_info.get("matricule_fiscal", "—")),
-        ("Téléphone",         extracted_info.get("tel",              "—")),
-        ("Fax",               extracted_info.get("fax",              "—")),
-        ("Email",             extracted_info.get("email",            "—")),
-        ("RC",                extracted_info.get("rc",               "—")),
-        ("Total HT",          extracted_info.get("total_ht",         "—")),
-        ("Total TTC",         extracted_info.get("total_ttc",        "—")),
+        ("Document Type",    extracted_info.get("type",             "—")),
+        ("Document N\u00b0",  extracted_info.get("numero",           "—")),
+        ("Date",             extracted_info.get("date",             "—")),
+        ("Matricule Fiscal", extracted_info.get("matricule_fiscal", "—")),
+        ("T\u00e9l\u00e9phone", extracted_info.get("tel",            "—")),
+        ("Fax",              extracted_info.get("fax",              "—")),
+        ("Email",            extracted_info.get("email",            "—")),
+        ("Adresse",          extracted_info.get("adresse",          "—")),
+        ("RC",               extracted_info.get("rc",               "—")),
+        ("Total HT",         extracted_info.get("total_ht",         "—")),
+        ("Total TTC",        extracted_info.get("total_ttc",        "—")),
     ]
     for idx, (label, value) in enumerate(fields):
         with info_cols[idx % 3]:
@@ -736,18 +967,23 @@ if uploaded and run_btn:
     if plumber_tables:
         st.markdown(f"## 🗃️ pdfplumber Tables ({len(plumber_tables)} found)")
         for t_idx, table in enumerate(plumber_tables):
-            st.markdown(f"**Table {t_idx+1}**")
-            if not table: continue
+            if not table:
+                continue
             headers = table[0]
             rows    = table[1:]
+            # count non-empty data rows
+            data_rows = [r for r in rows if any(str(c).strip() for c in r)]
+            st.markdown(f"**Table {t_idx + 1}** — {len(data_rows)} rows")
             table_html = "<div class='table-container'><table><thead><tr>"
             for h in headers:
-                table_html += f"<th>{h}</th>"
+                safe_h = str(h).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                table_html += f"<th>{safe_h}</th>"
             table_html += "</tr></thead><tbody>"
-            for row in rows:
+            for row in data_rows:
                 table_html += "<tr>"
                 for cell in row:
-                    table_html += f"<td>{cell}</td>"
+                    safe_c = str(cell).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    table_html += f"<td>{safe_c}</td>"
                 table_html += "</tr>"
             table_html += "</tbody></table></div>"
             st.markdown(table_html, unsafe_allow_html=True)
@@ -783,9 +1019,18 @@ if uploaded and run_btn:
     st.markdown("---")
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
+        # Build tables payload: list of {headers, rows} dicts for readability
+        tables_payload = []
+        for tbl in plumber_tables:
+            if tbl:
+                tables_payload.append({
+                    "headers": tbl[0],
+                    "rows":    tbl[1:]
+                })
         result_json = json.dumps({
             "informations_document": extracted_info,
-            "ligne_articles": product_lines,
+            "ligne_articles":        product_lines,
+            "tables_extraites":      tables_payload,
         }, ensure_ascii=False, indent=2)
         st.download_button(
             "⬇ Download JSON",
