@@ -1,0 +1,177 @@
+{
+  "informations_document": {
+    "type": "Bon de Commande",
+    "numero": "14825",
+    "date": "06/04/2023"
+  },
+  "fournisseur": {
+    "nom": "DISTRI-MED",
+    "adresse": "S. Social: 04 Res. Sabrine Rue | Dépôt _o Yo | La Marsa ZI Sidi Daoud La Marsa",
+    "matricule_fiscal": "989014Y/P/M/000",
+    "rc": "B108202007",
+    "tel": "77272480",
+    "fax": "77272050",
+    "email": "ad.commerciale@medis.com.tn"
+  },
+  "client": {
+    "nom": "MEDIS",
+    "ville": "Ezzahra",
+    "email": "ad.commerciale@medis.com.tn"
+  },
+  "ligne_articles": [
+    {
+      "code_pct": "352730",
+      "designation": "SMG/100ML IN",
+      "quantite": 6.0
+    },
+    {
+      "code_pct": "301500",
+      "designation": "1.5MG B/30 CP",
+      "quantite": 216.0
+    },
+    {
+      "code_pct": "302970",
+      "designation": "MEDIS 10MG B/30 CP",
+      "quantite": 60.0
+    },
+    {
+      "code_pct": "302968",
+      "designation": "MEDIS 5MG B/30 CP",
+      "quantite": 100.0
+    },
+    {
+      "code_pct": "303545",
+      "designation": "2.5MG B/60 CP PEL",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "303546",
+      "designation": "B/14 CP PEL",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "303547",
+      "designation": "B/60 CP PEL",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "302463",
+      "designation": "B/30 CP",
+      "quantite": 240.0
+    },
+    {
+      "code_pct": "302459",
+      "designation": "B/30 CP",
+      "quantite": 450.0
+    },
+    {
+      "code_pct": "302465",
+      "designation": "B/30 CP",
+      "quantite": 315.0
+    },
+    {
+      "code_pct": "302467",
+      "designation": "B/90 CP",
+      "quantite": 96.0
+    },
+    {
+      "code_pct": "302461",
+      "designation": "B/30 CP",
+      "quantite": 90.0
+    },
+    {
+      "code_pct": "300546",
+      "designation": "COLLYRE",
+      "quantite": 100.0
+    },
+    {
+      "code_pct": "302097",
+      "designation": "FORT 100MG/25MG B/30 CP PEL. SEC",
+      "quantite": 180.0
+    },
+    {
+      "code_pct": "302122",
+      "designation": "FORT 100MG/25MG B/90 CP PEL. SEC",
+      "quantite": 96.0
+    },
+    {
+      "code_pct": "302098",
+      "designation": "PLUS 100MG/12.5MG B/30 CP PEL. SEC",
+      "quantite": 48.0
+    },
+    {
+      "code_pct": "302123",
+      "designation": "PLUS 100MG/12.5MG B/90 CP PEL. SEC",
+      "quantite": 108.0
+    },
+    {
+      "code_pct": "302752",
+      "designation": "1000MG B/60 CP (GLUCOPHAGE)",
+      "quantite": 250.0
+    },
+    {
+      "code_pct": "302577",
+      "designation": "850MG B/60 CP (GLUCOPHAGE)",
+      "quantite": 48.0
+    },
+    {
+      "code_pct": "303543",
+      "designation": "200000UI/ML INJ B/1 FL IM",
+      "quantite": 500.0
+    },
+    {
+      "code_pct": "301004",
+      "designation": "B/30 CP",
+      "quantite": 20.0
+    },
+    {
+      "code_pct": "301186",
+      "designation": "B/16 GELU",
+      "quantite": 120.0
+    },
+    {
+      "code_pct": "301187",
+      "designation": "B/28 GELU",
+      "quantite": 192.0
+    },
+    {
+      "code_pct": "301188",
+      "designation": "B/16 GELU",
+      "quantite": 192.0
+    },
+    {
+      "code_pct": "301189",
+      "designation": "B/28 GELU",
+      "quantite": 320.0
+    },
+    {
+      "code_pct": "300829",
+      "designation": "B/1 GELULES",
+      "quantite": 207.0
+    },
+    {
+      "code_pct": "301884",
+      "designation": "B/12 GELULES",
+      "quantite": 40.0
+    },
+    {
+      "code_pct": "300937",
+      "designation": "B/2 GELULES",
+      "quantite": 120.0
+    },
+    {
+      "code_pct": "351346",
+      "designation": "——— — ——",
+      "quantite": 15.0
+    },
+    {
+      "code_pct": "300510",
+      "designation": "ETUIT (TARGOCID)"
+    },
+    {
+      "code_pct": "302922",
+      "designation": "SECABLE",
+      "quantite": 20.0
+    }
+  ]
+}

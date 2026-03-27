@@ -1,0 +1,188 @@
+{
+  "informations_document": {
+    "type": "Bon de Commande",
+    "date": "24/02/2023"
+  },
+  "fournisseur": {
+    "nom": "Bcn-",
+    "adresse": "ROUTE DE GREMDA 4 | KM Av. EL GHAZELI",
+    "fax": "7223572235445"
+  },
+  "client": {
+    "nom": "MEDIS",
+    "ville": "Tunis"
+  },
+  "ligne_articles": [
+    {
+      "code_pct": "PF00070004",
+      "designation": "BT 30 CP",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "302463",
+      "designation": "PELL",
+      "quantite": 150.0
+    },
+    {
+      "code_pct": "302464",
+      "designation": "BT 30 CP PELL",
+      "quantite": 144.0
+    },
+    {
+      "code_pct": "300646",
+      "designation": "FL 5ML COLLYRE"
+    },
+    {
+      "code_pct": "300647",
+      "designation": "BT 14 CP ENR"
+    },
+    {
+      "code_pct": "302122",
+      "designation": "SEC"
+    },
+    {
+      "code_pct": "300830",
+      "designation": "BT 12 GELULES"
+    },
+    {
+      "code_pct": "301690",
+      "designation": "PELL SEC —— —",
+      "quantite": 20.0
+    },
+    {
+      "code_pct": "301691",
+      "designation": "PELL SEC",
+      "quantite": 20.0
+    },
+    {
+      "code_pct": "300827",
+      "designation": "PELL SEC",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "351350",
+      "designation": "SEC",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "PF001300001",
+      "designation": "5 AMP INJ 5ML",
+      "quantite": 80.0
+    },
+    {
+      "code_pct": "300836",
+      "designation": "INJ 100ML IV",
+      "quantite": 120.0
+    },
+    {
+      "code_pct": "302513",
+      "designation": "5 CP PELL SEC",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "PF013500034",
+      "designation": "7 CP PELL",
+      "quantite": 96.0
+    },
+    {
+      "code_pct": "PF013500038",
+      "designation": "PELL SEC",
+      "quantite": 144.0
+    },
+    {
+      "code_pct": "302124",
+      "designation": "30 CP PELL SEC",
+      "quantite": 48.0
+    },
+    {
+      "code_pct": "302550",
+      "designation": "90 CP PELL SEC",
+      "quantite": 10.0
+    },
+    {
+      "code_pct": "PF007500003",
+      "designation": "PELL",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "301475",
+      "designation": "PELL",
+      "quantite": 4.0
+    },
+    {
+      "code_pct": "300173",
+      "designation": "INJ 3ML",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "350912",
+      "designation": "INJ 2ML",
+      "quantite": 20.0
+    },
+    {
+      "code_pct": "300337",
+      "designation": "FL 5ML (LOFEPAL)",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "351650",
+      "designation": "BT 30",
+      "quantite": 96.0
+    },
+    {
+      "code_pct": "300254",
+      "designation": "5 AMP INJ 10ML",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "301832",
+      "designation": "CP PELL",
+      "quantite": 80.0
+    },
+    {
+      "code_pct": "301831",
+      "designation": "INJ",
+      "quantite": 200.0
+    },
+    {
+      "code_pct": "300885",
+      "designation": "INJ",
+      "quantite": 120.0
+    },
+    {
+      "code_pct": "301550",
+      "designation": "PELL",
+      "quantite": 72.0
+    },
+    {
+      "code_pct": "300405",
+      "designation": "PELL",
+      "quantite": 240.0
+    },
+    {
+      "code_pct": "PF020300011",
+      "designation": "SEC",
+      "quantite": 10.0
+    },
+    {
+      "code_pct": "PF020300007",
+      "designation": "CP PELL",
+      "quantite": 20.0
+    },
+    {
+      "code_pct": "300596",
+      "designation": "30 CP PELL",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "PF016900012",
+      "designation": "INJ",
+      "quantite": 50.0
+    },
+    {
+      "code_pct": "351347",
+      "designation": "MG BT 16 CP",
+      "quantite": 196.0
+    }
+  ]
+}

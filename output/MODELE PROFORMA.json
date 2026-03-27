@@ -1,0 +1,219 @@
+{
+  "informations_document": {
+    "type": "Bon de Commande",
+    "numero": "MDN-PRF-2308139",
+    "date": "30/08/2023"
+  },
+  "fournisseur": {
+    "nom": "Laboraloires",
+    "adresse": "RUE EL AGHALIBA",
+    "rc": "Livraison",
+    "fax": "210066720102"
+  },
+  "client": {
+    "nom": "TUN00048",
+    "ville": "Tunis"
+  },
+  "ligne_articles": [
+    {
+      "code_pct": "350203",
+      "designation": "MG FLC PDR",
+      "quantite": 250.0
+    },
+    {
+      "code_pct": "303543",
+      "designation": "U.I/ML AMP INJ",
+      "quantite": 1.0
+    },
+    {
+      "code_pct": "302459",
+      "designation": "B30",
+      "quantite": 20.0
+    },
+    {
+      "code_pct": "302467",
+      "designation": "B90",
+      "quantite": 40.0
+    },
+    {
+      "code_pct": "PF002700010",
+      "designation": "GEL B30",
+      "quantite": 120.0
+    },
+    {
+      "code_pct": "PF002900006",
+      "designation": "B30",
+      "quantite": 40.0
+    },
+    {
+      "code_pct": "PF003900003",
+      "designation": "SAC PDR",
+      "quantite": 270.0
+    },
+    {
+      "code_pct": "PF007700018",
+      "designation": "B28 EXP",
+      "quantite": 20.0
+    },
+    {
+      "code_pct": "300821",
+      "designation": "0,000"
+    },
+    {
+      "code_pct": "300142",
+      "designation": "635,600",
+      "quantite": 14.0
+    },
+    {
+      "code_pct": "300601",
+      "designation": "932,480"
+    },
+    {
+      "code_pct": "300825",
+      "designation": "1 080,000",
+      "quantite": 1.0
+    },
+    {
+      "code_pct": "301690",
+      "designation": "522,600",
+      "quantite": 1.0
+    },
+    {
+      "code_pct": "300826",
+      "designation": "255,630",
+      "quantite": 2.0
+    },
+    {
+      "code_pct": "351691",
+      "designation": "1 481,544",
+      "quantite": 2.0
+    },
+    {
+      "code_pct": "300827",
+      "designation": "1 476,384",
+      "quantite": 3.0
+    },
+    {
+      "code_pct": "301692",
+      "designation": "997,080",
+      "quantite": 3.0
+    },
+    {
+      "code_pct": "300828",
+      "designation": "0,000",
+      "quantite": 4.0
+    },
+    {
+      "code_pct": "301693",
+      "designation": "2 093,904",
+      "quantite": 4.0
+    },
+    {
+      "code_pct": "301500",
+      "designation": "0,000"
+    },
+    {
+      "code_pct": "300390",
+      "designation": "445,080",
+      "quantite": 2.0
+    },
+    {
+      "code_pct": "302513",
+      "designation": "445,080"
+    },
+    {
+      "code_pct": "300836",
+      "designation": "836,400"
+    },
+    {
+      "code_pct": "301068",
+      "designation": "1 859,760",
+      "quantite": 500.0
+    },
+    {
+      "code_pct": "300806",
+      "designation": "3 084.840"
+    },
+    {
+      "code_pct": "302098",
+      "designation": "2 062.440"
+    },
+    {
+      "code_pct": "302123",
+      "designation": "2 662,272"
+    },
+    {
+      "code_pct": "302097",
+      "designation": "1 156,992"
+    },
+    {
+      "code_pct": "302122",
+      "designation": "2 816,640",
+      "quantite": 108.0
+    },
+    {
+      "code_pct": "302096",
+      "designation": "2 345,568",
+      "quantite": 4.0
+    },
+    {
+      "code_pct": "300532",
+      "designation": "GEL B16",
+      "quantite": 20.0
+    },
+    {
+      "code_pct": "302746",
+      "designation": "25,720 771,600"
+    },
+    {
+      "code_pct": "301397",
+      "designation": "65,502 9 432.288"
+    },
+    {
+      "code_pct": "301398",
+      "designation": "7,11 854,160"
+    },
+    {
+      "code_pct": "301602",
+      "designation": "13,12. 0.000"
+    },
+    {
+      "code_pct": "302095",
+      "designation": "8,521 3 067,560"
+    },
+    {
+      "code_pct": "351347",
+      "designation": "10,2 4 906,560"
+    },
+    {
+      "code_pct": "300604",
+      "designation": "19,000 0,000"
+    },
+    {
+      "code_pct": "300510",
+      "designation": "457,920"
+    },
+    {
+      "code_pct": "302972",
+      "designation": "6,016 0.000",
+      "quantite": 80.0
+    },
+    {
+      "code_pct": "302976",
+      "designation": "633,750"
+    },
+    {
+      "code_pct": "301172",
+      "designation": "686,000"
+    },
+    {
+      "code_pct": "301173",
+      "designation": "2 399,520"
+    },
+    {
+      "code_pct": "351814",
+      "designation": "1121,760",
+      "quantite": 4.0
+    }
+  ]
+}

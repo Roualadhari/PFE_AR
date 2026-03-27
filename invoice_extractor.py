@@ -123,6 +123,7 @@ def erase_colored_ink(img_bgr: np.ndarray) -> np.ndarray:
     return result
 
 
+"""
 def binarize(gray: np.ndarray) -> np.ndarray:
     return cv2.adaptiveThreshold(
         gray, 255,
@@ -131,7 +132,7 @@ def binarize(gray: np.ndarray) -> np.ndarray:
         blockSize=25,
         C=8
     )
-
+"""
 
 def remove_long_lines(binary: np.ndarray) -> np.ndarray:
     inverted = cv2.bitwise_not(binary)
@@ -247,8 +248,8 @@ def preprocess_scanned_page(img_bgr: np.ndarray) -> np.ndarray:
     img_bgr = erase_colored_ink(img_bgr)
 
     gray   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    binary = binarize(gray)
-    binary = remove_long_lines(binary)
+    #binary = binarize(gray)
+    binary = remove_long_lines(gray)
 
     keep_mask = build_keep_mask(binary)
     cleaned   = enhance_kept_text(binary, keep_mask)
@@ -286,11 +287,11 @@ def preprocess_scanned_page_steps(img_bgr: np.ndarray) -> dict:
     steps['Color Removed'] = decolored.copy()
 
     gray   = cv2.cvtColor(decolored, cv2.COLOR_BGR2GRAY)
-    binary = binarize(gray)
+    #binary = binarize(gray)
     # Convert back to BGR for consistent display
-    steps['Binarized'] = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+    steps['Binarized'] = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-    no_lines = remove_long_lines(binary)
+    no_lines = remove_long_lines(gray)
     steps['Lines Removed'] = cv2.cvtColor(no_lines, cv2.COLOR_GRAY2BGR)
 
     keep_mask = build_keep_mask(no_lines)

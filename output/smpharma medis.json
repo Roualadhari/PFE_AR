@@ -1,0 +1,225 @@
+{
+  "informations_document": {
+    "type": "Bon de Commande",
+    "numero": "6671",
+    "date": "16/06/2023"
+  },
+  "fournisseur": {
+    "nom": "ith",
+    "adresse": "RUE SAFIA FARLIAT-SAHLOUL",
+    "tel": "73369900",
+    "fax": "73820777",
+    "email": "Ste.smpharma@gmail.com"
+  },
+  "client": {
+    "nom": "MEDIS\nCommande n",
+    "email": "Ste.smpharma@gmail.com",
+    "code_fournisseur": "400299"
+  },
+  "ligne_articles": [
+    {
+      "code_pct": "607171",
+      "designation": "172,800"
+    },
+    {
+      "code_pct": "300546",
+      "designation": "200, 7 2250. 450,000"
+    },
+    {
+      "code_pct": "350475",
+      "designation": "| __ 42e/"
+    },
+    {
+      "code_pct": "300646",
+      "designation": "CP | 7 40!",
+      "quantite": 14.0
+    },
+    {
+      "code_pct": "302098",
+      "designation": "B/30 CP"
+    },
+    {
+      "code_pct": "302123",
+      "designation": "0 | 12/- 18,488 221,856"
+    },
+    {
+      "code_pct": "300767",
+      "designation": "8,044 | _579 168",
+      "quantite": 30.0
+    },
+    {
+      "code_pct": "300397",
+      "designation": "| 120) 2,023 1760"
+    },
+    {
+      "code_pct": "302577",
+      "designation": "B/60CP |"
+    },
+    {
+      "code_pct": "350913",
+      "designation": "48,7 12,500, 12, | 600,000"
+    },
+    {
+      "code_pct": "350914",
+      "designation": "B/2 INJ | |_3067"
+    },
+    {
+      "code_pct": "300915",
+      "designation": "306; 11,704, 3581,424"
+    },
+    {
+      "code_pct": "301365",
+      "designation": "0] 697,800 800 |"
+    },
+    {
+      "code_pct": "301186",
+      "designation": "24 ee, 264 |"
+    },
+    {
+      "code_pct": "301366",
+      "designation": "CU 9,694",
+      "quantite": 8.0
+    },
+    {
+      "code_pct": "301189",
+      "designation": "B/28 A"
+    },
+    {
+      "code_pct": "350832",
+      "designation": "207 F 110,000",
+      "quantite": 16.0
+    },
+    {
+      "code_pct": "300601",
+      "designation": "20 all 160,000",
+      "quantite": 3.0
+    },
+    {
+      "code_pct": "351828",
+      "designation": "INJ B/1 3ML T"
+    },
+    {
+      "code_pct": "300534",
+      "designation": "GELU |",
+      "quantite": 28.0
+    },
+    {
+      "code_pct": "300825",
+      "designation": "a |",
+      "quantite": 30.0
+    },
+    {
+      "code_pct": "301690",
+      "designation": "_ |",
+      "quantite": 7.0
+    },
+    {
+      "code_pct": "301692",
+      "designation": "213,048 048"
+    },
+    {
+      "code_pct": "300828",
+      "designation": "24/7 —",
+      "quantite": 30.0
+    },
+    {
+      "code_pct": "351350",
+      "designation": "Va |_ 232"
+    },
+    {
+      "code_pct": "300836",
+      "designation": "CP ~~ 127"
+    },
+    {
+      "code_pct": "301068",
+      "designation": "B/10 L 140"
+    },
+    {
+      "code_pct": "302513",
+      "designation": "7 6970 |"
+    },
+    {
+      "code_pct": "302511",
+      "designation": "7 1 201"
+    },
+    {
+      "code_pct": "300300",
+      "designation": "T —"
+    },
+    {
+      "code_pct": "302550",
+      "designation": "|___ |"
+    },
+    {
+      "code_pct": "302551",
+      "designation": "~ … 16, 434)"
+    },
+    {
+      "code_pct": "300173",
+      "designation": "| [| 394,416"
+    },
+    {
+      "code_pct": "350834",
+      "designation": "| 127,428"
+    },
+    {
+      "code_pct": "301832",
+      "designation": "Vai 0/7 | =",
+      "quantite": 300.0
+    },
+    {
+      "code_pct": "301550",
+      "designation": "| 50 77 38,500 1925,000"
+    },
+    {
+      "code_pct": "300163",
+      "designation": "we a I 560 2|",
+      "quantite": 2.0
+    },
+    {
+      "code_pct": "300405",
+      "designation": "1. aa 2, 019 1130,640",
+      "quantite": 16.0
+    },
+    {
+      "code_pct": "802972",
+      "designation": "a 20)” 253,500",
+      "quantite": 30.0
+    },
+    {
+      "code_pct": "302974",
+      "designation": "| 12",
+      "quantite": 3.0
+    },
+    {
+      "code_pct": "301912",
+      "designation": "50; 717 17 (307 | 865,350"
+    },
+    {
+      "code_pct": "301398",
+      "designation": "ç 12| _ 25,720) 308,640 |"
+    },
+    {
+      "code_pct": "301997",
+      "designation": "10|~ 13,124 131 ,240 |"
+    },
+    {
+      "code_pct": "300871",
+      "designation": "| 499,900"
+    },
+    {
+      "code_pct": "302922",
+      "designation": "LZ +. 30 184 | 1086,624",
+      "quantite": 91.0
+    },
+    {
+      "code_pct": "301601",
+      "designation": "— T 88,656, 443,280",
+      "quantite": 4.0
+    },
+    {
+      "code_pct": "300290",
+      "designation": "“ | 31,865"
+    }
+  ]
+}

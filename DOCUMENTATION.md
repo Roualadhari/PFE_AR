@@ -27,9 +27,6 @@ This system takes **pharmaceutical invoice documents** (PDFs or scanned images) 
 3. Runs OCR (Optical Character Recognition) to extract text
 4. Structures the text into JSON (header, body lines, footer)
 5. Visualizes every step in an interactive web interface
-
-The documents come from Tunisian pharmaceutical distributors (DISTRI-MED, MEDIS, OMNIPHARM, etc.) and Moroccan retailers (KITEA). They vary in format, quality, layout, and language (French/Arabic mix).
-
 ---
 
 ## 2. Technologies Used
