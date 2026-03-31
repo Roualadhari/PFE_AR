@@ -1,14 +1,12 @@
 """
-Invoice OCR Pipeline — Streamlit App
+Invoice OCR Pipeline — Streamlit App v3
 Integrates: invoice_extractor.py preprocessing + pdfplumber tables + regex extraction
 
 Changes v3:
-  • Removed single-page original/cleaned preview
-  • All cleaned pages shown sequentially after processing
-  • Extraction always runs on ALL pages from page 1
-  • Address extraction added (Route, Rue, Avenue, Cité, Zone, etc.)
-  • Document type shown as a field in the Extracted Information grid
-  • Sidebar "Page" section removed (no longer needed)
+  • All pages processed from page 1 onwards
+  • Live pipeline log panel shows every step as it runs
+  • Address extraction added
+  • Document type shown in Extracted Information grid
 """
 
 import streamlit as st
@@ -21,6 +19,7 @@ import re
 import json
 import tempfile
 import os
+import time as _time
 from pathlib import Path
 from PIL import Image
 
@@ -40,100 +39,142 @@ st.set_page_config(
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;600;700&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'Syne', sans-serif;
-    }
-    code, .stCode, pre {
-        font-family: 'JetBrains Mono', monospace !important;
-    }
-
+    html, body, [class*="css"] { font-family: 'Syne', sans-serif; }
+    code, .stCode, pre { font-family: 'JetBrains Mono', monospace !important; }
     .stApp { background: #0f1117; color: #e8e8e2; }
-
-    h1 { font-family: 'Syne', sans-serif; font-weight: 700;
-         letter-spacing: -1px; color: #f0f0ea; }
-    h2, h3 { font-family: 'Syne', sans-serif; font-weight: 600; color: #d4d4ce; }
-
-    .metric-card {
-        background: #1a1d26; border: 1px solid #2a2d3a;
-        border-radius: 8px; padding: 16px 20px; margin: 6px 0;
-    }
+    h1 { font-family: 'Syne'; font-weight: 700; letter-spacing: -1px; color: #f0f0ea; }
+    h2, h3 { font-family: 'Syne'; font-weight: 600; color: #d4d4ce; }
+    .metric-card { background: #1a1d26; border: 1px solid #2a2d3a; border-radius: 8px;
+                   padding: 16px 20px; margin: 6px 0; }
     .metric-label { font-size: 11px; color: #666; text-transform: uppercase;
                     letter-spacing: 1px; margin-bottom: 4px; }
     .metric-value { font-family: 'JetBrains Mono'; font-size: 18px;
                     font-weight: 600; color: #7ee8a2; }
-
-    .field-row { display: flex; gap: 12px; margin: 4px 0; }
-    .field-key { font-family: 'JetBrains Mono'; font-size: 12px;
-                 color: #888; min-width: 160px; }
-    .field-val { font-family: 'JetBrains Mono'; font-size: 12px; color: #e8e8e2; }
-
-    .tag-bc { background: #1a3a2a; color: #7ee8a2; padding: 2px 10px;
-              border-radius: 12px; font-size: 11px; border: 1px solid #2a5a3a; }
-    .tag-proforma { background: #1a2a3a; color: #7ec8e8; padding: 2px 10px;
+    .tag-bc       { background: #1a3a2a; color: #7ee8a2;  padding: 2px 10px;
+                    border-radius: 12px; font-size: 11px; border: 1px solid #2a5a3a; }
+    .tag-proforma { background: #1a2a3a; color: #7ec8e8;  padding: 2px 10px;
                     border-radius: 12px; font-size: 11px; border: 1px solid #2a4a5a; }
-    .tag-facture { background: #3a2a1a; color: #e8c87e; padding: 2px 10px;
-                   border-radius: 12px; font-size: 11px; border: 1px solid #5a4a2a; }
-    .tag-stat { background: #2a1a3a; color: #c87ee8; padding: 2px 10px;
-                border-radius: 12px; font-size: 11px; border: 1px solid #4a2a5a; }
-
-    .step-badge { background: #2a2d3a; color: #7ee8a2;
-                  font-family: 'JetBrains Mono'; font-size: 11px;
-                  padding: 2px 8px; border-radius: 4px; margin-right: 8px; }
-
+    .tag-facture  { background: #3a2a1a; color: #e8c87e;  padding: 2px 10px;
+                    border-radius: 12px; font-size: 11px; border: 1px solid #5a4a2a; }
+    .tag-stat     { background: #2a1a3a; color: #c87ee8;  padding: 2px 10px;
+                    border-radius: 12px; font-size: 11px; border: 1px solid #4a2a5a; }
     div[data-testid="stSidebar"] { background: #13151f; border-right: 1px solid #1e2130; }
-
-    .stButton > button {
-        background: #7ee8a2; color: #0f1117; border: none;
-        font-family: 'Syne'; font-weight: 700; letter-spacing: 0.5px;
-        padding: 10px 28px; border-radius: 6px; width: 100%;
-        transition: all 0.2s;
-    }
+    .stButton > button { background: #7ee8a2; color: #0f1117; border: none;
+                         font-family: 'Syne'; font-weight: 700; letter-spacing: 0.5px;
+                         padding: 10px 28px; border-radius: 6px; width: 100%;
+                         transition: all 0.2s; }
     .stButton > button:hover { background: #a0f0b8; transform: translateY(-1px); }
-
     .raw-text { background: #1a1d26; border: 1px solid #2a2d3a; border-radius: 8px;
                 padding: 16px; font-family: 'JetBrains Mono'; font-size: 11px;
                 color: #b0b0a8; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
-
     .table-container { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px;
-            font-family: 'JetBrains Mono'; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: 'JetBrains Mono'; }
     th { background: #1e2130; color: #7ee8a2; padding: 8px 12px;
          text-align: left; border-bottom: 1px solid #2a2d3a; font-weight: 600; }
     td { padding: 7px 12px; border-bottom: 1px solid #1e2130;
          color: #c8c8c2; vertical-align: top; }
     tr:hover td { background: #1a1d26; }
-
     .page-label { font-family: 'Syne'; font-size: 12px; color: #555;
-                  text-transform: uppercase; letter-spacing: 1px;
-                  margin: 12px 0 4px 0; }
+                  text-transform: uppercase; letter-spacing: 1px; margin: 12px 0 4px 0; }
+
+    /* ── Pipeline Log ─────────────────────────────── */
+    .pl-wrap  { background: #0d0f17; border: 1px solid #1e2130; border-radius: 10px;
+                padding: 14px 16px; margin-bottom: 12px; }
+    .pl-title { font-family: 'Syne'; font-size: 11px; font-weight: 600; color: #555;
+                text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 10px; }
+    .pl-step  { display: flex; align-items: flex-start; gap: 10px;
+                padding: 7px 0; border-bottom: 1px solid #141720; }
+    .pl-step:last-child { border-bottom: none; }
+    .pl-icon  { font-size: 13px; flex-shrink: 0; width: 18px; text-align: center; margin-top: 1px; }
+    .pl-info  { flex: 1; min-width: 0; }
+    .pl-name  { font-family: 'Syne'; font-size: 12px; }
+    .pl-detail{ font-family: 'JetBrains Mono'; font-size: 10px; color: #445;
+                margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pl-time  { font-family: 'JetBrains Mono'; font-size: 10px; color: #445;
+                flex-shrink: 0; padding-left: 8px; align-self: center; }
+    .s-pending .pl-name { color: #383c50; }
+    .s-running .pl-name { color: #7ee8a2; }
+    .s-done    .pl-name { color: #c8c8c2; }
+    .s-skip    .pl-name { color: #333849; font-style: italic; }
+    .s-warn    .pl-name { color: #e8c87e; }
+    .s-done    .pl-icon::after { content: ''; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PIPELINE LOG — live step-by-step status panel
+# ═══════════════════════════════════════════════════════════════════════════
+
+_STEPS = [
+    # (key,            icon, label)
+    ("load",           "📂", "Load file"),
+    ("detect",         "🔍", "Detect PDF type"),
+    ("preprocess",     "🧹", "Preprocess image(s)"),
+    ("ocr",            "🔤", "OCR text extraction"),
+    ("pdfplumber",     "📊", "pdfplumber tables"),
+    ("regex",          "🔎", "Regex field extraction"),
+    ("products",       "📦", "Product line extraction"),
+    ("done",           "✅", "Pipeline complete"),
+]
+
+def _log_init():
+    st.session_state["_pl"] = {
+        k: {"status": "pending", "detail": "", "t": ""}
+        for k, *_ in _STEPS
+    }
+
+def _log_set(key, status, detail="", t0=0.0):
+    if "_pl" not in st.session_state:
+        _log_init()
+    elapsed = ""
+    if status == "done" and t0:
+        ms = int((_time.time() - t0) * 1000)
+        elapsed = f"{ms}ms" if ms < 1000 else f"{ms/1000:.1f}s"
+    st.session_state["_pl"][key] = {"status": status, "detail": detail, "t": elapsed}
+
+def _log_render(ph):
+    """Re-render the pipeline log into Streamlit placeholder `ph`."""
+    if "_pl" not in st.session_state:
+        return
+    pl = st.session_state["_pl"]
+    icons = {"pending": "○", "running": "⏳", "done": "✓", "skip": "–", "warn": "⚠"}
+    html = "<div class='pl-wrap'><div class='pl-title'>⚡ Pipeline</div>"
+    for key, _, label in _STEPS:
+        s   = pl.get(key, {"status": "pending", "detail": "", "t": ""})
+        st_ = s["status"]
+        html += (
+            f"<div class='pl-step s-{st_}'>"
+            f"<span class='pl-icon'>{icons.get(st_, '○')}</span>"
+            f"<div class='pl-info'>"
+            f"<div class='pl-name'>{label}</div>"
+            + (f"<div class='pl-detail'>{s['detail']}</div>" if s['detail'] else "")
+            + "</div>"
+            + (f"<span class='pl-time'>{s['t']}</span>" if s['t'] else "")
+            + "</div>"
+        )
+    html += "</div>"
+    ph.markdown(html, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PREPROCESSING — from invoice_extractor.py (best version)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def fix_rotation(img_bgr: np.ndarray) -> np.ndarray:
-    """Stage 1: OSD for 90/180/270 flips. Stage 2: tiny fine skew only."""
+def fix_rotation(img_bgr):
     try:
         gray_temp = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-        osd = pytesseract.image_to_osd(
-            gray_temp, config="--psm 0 -c min_characters_to_try=5"
-        )
+        osd = pytesseract.image_to_osd(gray_temp, config="--psm 0 -c min_characters_to_try=5")
         angle_m = re.search(r"Rotate: (\d+)", osd)
         conf_m  = re.search(r"Orientation confidence: ([\d\.]+)", osd)
         confidence = float(conf_m.group(1)) if conf_m else 0.0
         if angle_m and confidence >= 2.0:
             a = int(angle_m.group(1))
-            if a == 90:   img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            if a == 90:    img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
             elif a == 180: img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_180)
             elif a == 270: img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_90_CLOCKWISE)
     except Exception:
         pass
-
-    # Fine skew: only apply for angles between 0.3° and 3°
     gray   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     coords = np.column_stack(np.where(gray < 200))
     if len(coords) >= 500:
@@ -148,8 +189,7 @@ def fix_rotation(img_bgr: np.ndarray) -> np.ndarray:
     return img_bgr
 
 
-def erase_colored_ink(img_bgr: np.ndarray) -> np.ndarray:
-    """Fade colored ink to gray, but keep dark digits inside colored regions."""
+def erase_colored_ink(img_bgr):
     hsv    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     gray   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     result = img_bgr.copy()
@@ -158,19 +198,16 @@ def erase_colored_ink(img_bgr: np.ndarray) -> np.ndarray:
     color_mask = cv2.dilate(color_mask, k, iterations=1)
     dark = (gray < 100)
     result[(color_mask > 0) & ~dark] = [230, 230, 230]
-    result[(color_mask > 0) & dark]  = [0, 0, 0]
+    result[(color_mask > 0) &  dark] = [0, 0, 0]
     return result
 
 
-def binarize(gray: np.ndarray) -> np.ndarray:
-    return cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, blockSize=25, C=8
-    )
+def binarize(gray):
+    return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                 cv2.THRESH_BINARY, blockSize=25, C=8)
 
 
-def remove_long_lines(binary: np.ndarray) -> np.ndarray:
-    """Remove table borders > 80px. Protect text blobs from deletion."""
+def remove_long_lines(binary):
     inverted = cv2.bitwise_not(binary)
     h_k = cv2.getStructuringElement(cv2.MORPH_RECT, (80, 1))
     v_k = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 80))
@@ -181,8 +218,7 @@ def remove_long_lines(binary: np.ndarray) -> np.ndarray:
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inverted, 8)
     text_protect = np.zeros_like(binary)
     for i in range(1, num_labels):
-        bw = stats[i, cv2.CC_STAT_WIDTH]
-        bh = stats[i, cv2.CC_STAT_HEIGHT]
+        bw = stats[i, cv2.CC_STAT_WIDTH]; bh = stats[i, cv2.CC_STAT_HEIGHT]
         ar = stats[i, cv2.CC_STAT_AREA]
         if 5 <= bw <= 120 and 5 <= bh <= 120 and 20 <= ar <= 8000:
             text_protect[labels == i] = 255
@@ -193,21 +229,19 @@ def remove_long_lines(binary: np.ndarray) -> np.ndarray:
     return cv2.bitwise_not(inverted)
 
 
-def stroke_cv(blob: np.ndarray) -> float:
+def stroke_cv(blob):
     ek = cv2.getStructuringElement(cv2.MORPH_CROSS, (3,3))
     cur, counts = blob.copy(), []
     for _ in range(15):
         cur = cv2.erode(cur, ek)
-        n = cv2.countNonZero(cur)
-        counts.append(n)
+        n = cv2.countNonZero(cur); counts.append(n)
         if n == 0: break
     if len(counts) < 2: return 999.0
-    nz = np.array(counts, dtype=float)
-    nz = nz[nz > 0]
+    nz = np.array(counts, dtype=float); nz = nz[nz > 0]
     return float(np.std(nz) / (np.mean(nz) + 1e-5)) if len(nz) else 999.0
 
 
-def build_keep_mask(binary: np.ndarray) -> np.ndarray:
+def build_keep_mask(binary):
     inverted = cv2.bitwise_not(binary)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inverted, 8)
     keep_mask = np.zeros_like(binary)
@@ -228,83 +262,47 @@ def build_keep_mask(binary: np.ndarray) -> np.ndarray:
     return keep_mask
 
 
-def enhance_kept_text(binary: np.ndarray, keep_mask: np.ndarray) -> np.ndarray:
+def enhance_kept_text(binary, keep_mask):
     ek = cv2.getStructuringElement(cv2.MORPH_RECT, (2,2))
     km = cv2.dilate(keep_mask, ek, iterations=1)
-    result = np.full_like(binary, 255)
-    result[km > 0] = 0
+    result = np.full_like(binary, 255); result[km > 0] = 0
     return result
-
-
-def full_preprocess(img_bgr: np.ndarray) -> np.ndarray:
-    img_bgr = fix_rotation(img_bgr)
-    img_bgr = erase_colored_ink(img_bgr)
-    gray    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    binary  = binarize(gray)
-    binary  = remove_long_lines(binary)
-    return enhance_kept_text(binary, build_keep_mask(binary))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # OCR FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def ocr_full_page(clean_img: np.ndarray) -> str:
-    """Standard full-page OCR — LSTM engine, French+English."""
+def ocr_full_page(clean_img):
     return pytesseract.image_to_string(
-        clean_img, lang="fra+eng", config="--psm 6 --oem 1"
-    ).strip()
+        clean_img, lang="fra+eng", config="--psm 6 --oem 1").strip()
 
-
-def ocr_header_zone(clean_img: np.ndarray) -> str:
-    """
-    OCR only the top 25% of the image (header zone).
-    Uses --psm 4 (single column) which works better for header blocks.
-    """
+def ocr_header_zone(clean_img):
     h = clean_img.shape[0]
-    header_zone = clean_img[:int(h * 0.25), :]
     return pytesseract.image_to_string(
-        header_zone, lang="fra+eng", config="--psm 4 --oem 1"
-    ).strip()
+        clean_img[:int(h*0.25), :], lang="fra+eng", config="--psm 4 --oem 1").strip()
 
-
-def ocr_body_zone(clean_img: np.ndarray) -> str:
-    """
-    OCR only the body (25%-90% of image height) — the table area.
-    Uses --psm 6 (uniform block) which is best for tables.
-    """
+def ocr_body_zone(clean_img):
     h = clean_img.shape[0]
-    body_zone = clean_img[int(h * 0.22):int(h * 0.92), :]
     return pytesseract.image_to_string(
-        body_zone, lang="fra+eng", config="--psm 6 --oem 1"
-    ).strip()
+        clean_img[int(h*0.22):int(h*0.92), :], lang="fra+eng", config="--psm 6 --oem 1").strip()
 
-
-def clean_ocr_text(text: str) -> str:
-    """Post-process OCR output: fix common character confusions."""
-    # Remove (cid:XX) native PDF artifacts
+def clean_ocr_text(text):
     text = re.sub(r'\(cid:\d+\)', '', text)
-    # Collapse spaced uppercase letters "O M N I" → "OMNI"
     text = re.sub(r'(?<!\w)([A-Z] ){3,}([A-Z])(?!\w)',
                   lambda m: m.group(0).replace(' ', ''), text)
     text = re.sub(r'(?<!\w)((?:[A-Z0-9] ){4,}[A-Z0-9])(?!\w)',
                   lambda m: m.group(0).replace(' ', ''), text)
-    # Fix l/I between digits → 1
     text = re.sub(r'(?<=\d)l(?=\d)', '1', text)
     text = re.sub(r'(?<=\d)I(?=\d)', '1', text)
-    # Fix degree sign used as 0
     text = re.sub(r'(\d)°o', r'\g<1>0', text)
     text = re.sub(r'(\d)°(?=\d)', r'\g<1>0', text)
-    # Remove stray border pipes
     text = re.sub(r'(?<=[A-Za-z0-9])\|(?=[A-Za-z0-9])', ' ', text)
     text = re.sub(r'^\s*\|\s*$', '', text, flags=re.MULTILINE)
-    # Title restorations
     text = re.sub(r'(?i)\b(on de commande)\b', 'Bon de commande', text)
     text = re.sub(r'(?i)\b(on de livraison)\b', 'Bon de livraison', text)
-    # Clean noise
     text = re.sub(r'[=~_—]{2,}', ' ', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
-    # Remove garbage lines: must have ≥3 alphanum chars AND word/number
     lines = []
     for line in text.splitlines():
         s = line.strip()
@@ -319,52 +317,32 @@ def clean_ocr_text(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TABLE EXTRACTION — pdfplumber (for native PDFs)
+# TABLE EXTRACTION — pdfplumber
 # ═══════════════════════════════════════════════════════════════════════════
 
-def extract_tables_pdfplumber(pdf_path: str) -> list:
-    """
-    Uses pdfplumber to extract structured tables from native PDFs.
-    Returns a list of tables, each table is a list of rows.
-    Much more accurate than OCR for native PDFs since it reads
-    the actual PDF vector data, not an image of it.
-    """
+def extract_tables_pdfplumber(pdf_path):
     all_tables = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            tables = page.extract_tables({
-                "vertical_strategy":   "lines",
-                "horizontal_strategy": "lines",
-                "intersection_tolerance": 5,
-            })
+            tables = page.extract_tables({"vertical_strategy":"lines",
+                                          "horizontal_strategy":"lines",
+                                          "intersection_tolerance":5})
             for table in (tables or []):
-                # Preserve ALL cell content (digits, letters, alphanumeric mixed).
-                # Only None/empty cells are converted to '' — text is never stripped.
                 clean = []
                 for row in table:
-                    r = []
-                    for cell in row:
-                        if cell is None:
-                            r.append('')
-                        else:
-                            # Keep full cell text as-is (letters, digits, spaces, symbols)
-                            r.append(str(cell).strip())
-                    if any(c for c in r):  # skip fully empty rows
-                        clean.append(r)
-                if clean:
-                    all_tables.append(clean)
+                    r = [str(c or '').strip() for c in row]
+                    if any(c for c in r): clean.append(r)
+                if clean: all_tables.append(clean)
     return all_tables
 
-
-def detect_pdf_native(pdf_path: str) -> bool:
-    """Check if PDF has a real text layer (native) or is scanned."""
+def detect_pdf_native(pdf_path):
     with pdfplumber.open(pdf_path) as pdf:
         total = sum(len((p.extract_text() or '').strip()) for p in pdf.pages)
     return total > 100
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# REGEX EXTRACTION — structured fields from OCR text
+# REGEX EXTRACTION
 # ═══════════════════════════════════════════════════════════════════════════
 
 DOC_TYPES = {
@@ -376,65 +354,46 @@ DOC_TYPES = {
     "Chiffre d'Affaires": ["chiffre d'affaire", "ventes et chiffre"],
 }
 
-def detect_doc_type(text: str) -> str:
+def detect_doc_type(text):
     tl = text.lower()
-    for dtype, keywords in DOC_TYPES.items():
-        if any(kw in tl for kw in keywords):
-            return dtype
+    for dtype, kws in DOC_TYPES.items():
+        if any(k in tl for k in kws): return dtype
     return "Document"
 
+_ADDR_ANCHOR = re.compile(
+    r'\b(route|rue|avenue|av\.?|bd\.?|boulevard|cit[eé]|zone\s+ind'
+    r'|lot\s+n?[°o]?|lotissement|impasse|r[eé]sidence|quartier|km\s*\d'
+    r'|n[°o]\s*\d{1,4}\s+(?:rue|route|av))\b', re.IGNORECASE)
 
-# ── Address detection ──────────────────────────────────────────────────────
-# Lines containing any of these anchors are treated as address lines.
-_ADDRESS_ANCHORS = re.compile(
-    r'\b('
-    r'route|rue|avenue|av\.?|bd\.?|boulevard'
-    r'|cit[eé]|zone\s+ind|lot\s+n?[°o]?'
-    r'|lotissement|impasse|r[eé]sidence'
-    r'|quartier|km\s*\d'
-    r'|n[°o]\s*\d{1,4}\s+(?:rue|route|av)'
-    r')',
-    re.IGNORECASE
-)
-
-def extract_address(header_text: str) -> str:
-    """
-    Scan lines of the header OCR text for address-like content.
-    A line qualifies if it contains a known address keyword.
-    One continuation line is also accepted (multi-line addresses).
-    Returns detected address joined with ' — ', or empty string.
-    """
-    lines    = [l.strip() for l in header_text.splitlines() if l.strip()]
-    found    = []
-    in_block = False
-
+def extract_address(header_text):
+    lines = [l.strip() for l in header_text.splitlines() if l.strip()]
+    found = []; in_block = False
     for line in lines:
-        if _ADDRESS_ANCHORS.search(line):
-            found.append(line)
-            in_block = True
+        if _ADDR_ANCHOR.search(line):
+            found.append(line); in_block = True
         elif in_block:
-            # Accept one continuation line if it is not a labelled field
-            is_label = re.match(
-                r'^(tel|fax|m\.?f|r\.?c|sfax|tunis|nabeul|sousse'
-                r'|date|page|code|email|prépar|edité)',
-                line, re.I
-            )
-            if not is_label and 6 < len(line) < 120:
-                found.append(line)
-            in_block = False   # only one continuation line accepted
-
+            is_label = re.match(r'^(tel|fax|m\.?f|r\.?c|sfax|tunis|nabeul|sousse'
+                                r'|date|page|code|email|prépar|edité)', line, re.I)
+            if not is_label and 6 < len(line) < 120: found.append(line)
+            in_block = False
     return " — ".join(found) if found else ""
 
+def _to_float(s):
+    if not s: return None
+    s = str(s).strip(); s = re.sub(r'[^\d,.]','', s)
+    if not s: return None
+    if ',' in s and '.' in s:
+        s = s.replace(',','') if s.rfind('.')>s.rfind(',') else s.replace('.','').replace(',','.')
+    elif ',' in s:
+        p = s.split(',')
+        s = s.replace(',','.') if len(p)==2 and len(p[1])<=3 else s.replace(',','')
+    try: return round(float(s), 3)
+    except: return None
 
-def extract_info(text: str) -> dict:
-    """Extract structured fields using regex on the full OCR text."""
+def extract_info(text):
     info = {}
-
-    # Document type
     info["type"] = detect_doc_type(text)
-
-    # Document number — try most specific first
-    for pattern in [
+    for pat in [
         r'PROFORMA\s+N[°o][:\s]*([A-Z0-9\-]{6,25})',
         r'Commande\s+(?:Fournisseur\s+)?N[°o][:\s]*(\d{4,10})',
         r'N[°o]\s*Facture[:\s]*([A-Z0-9\-]{4,20})',
@@ -443,110 +402,53 @@ def extract_info(text: str) -> dict:
         r'\b(BCM?-\d{2}-\d{4})\b',
         r'N[°o][:\s]*([A-Z0-9\-]{4,20})',
     ]:
-        m = re.search(pattern, text, re.IGNORECASE)
+        m = re.search(pat, text, re.IGNORECASE)
         if m:
             num = re.sub(r'\s+','', m.group(1)).strip(".,;:")
-            if len(num) >= 3:
-                info["numero"] = num
-                break
+            if len(num) >= 3: info["numero"] = num; break
 
-    # Date
     m = re.search(r'Date\s*[:\-]?\s*(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4})', text, re.I)
-    if not m:
-        m = re.search(r'\b(\d{2}[/\-\.]\d{2}[/\-\.]\d{4})\b', text)
+    if not m: m = re.search(r'\b(\d{2}[/\-\.]\d{2}[/\-\.]\d{4})\b', text)
     if m: info["date"] = m.group(1)
 
-    # Matricule fiscal — Tunisian strict format ONLY
-    _MF_PATTERN = re.compile(
-        r'\b'
-        r'(\d{6,8})'
-        r'[/\\|\s]?([A-Z])'
-        r'[/\\|\s]?([A-Z])'
-        r'[/\\|\s]?([A-Z])'
-        r'[/\\|\s]?(\d{3})'
-        r'\b',
-        re.IGNORECASE
-    )
-    mf_m = _MF_PATTERN.search(text)
-    if mf_m:
-        d1 = mf_m.group(1)
-        l1, l2, l3 = mf_m.group(2).upper(), mf_m.group(3).upper(), mf_m.group(4).upper()
-        d2 = mf_m.group(5)
+    _MF = re.compile(
+        r'\b(\d{6,8})[/\\|\s]?([A-Z])[/\\|\s]?([A-Z])[/\\|\s]?([A-Z])[/\\|\s]?(\d{3})\b',
+        re.IGNORECASE)
+    mf = _MF.search(text)
+    if mf:
+        d1,l1,l2,l3,d2 = mf.group(1),mf.group(2).upper(),mf.group(3).upper(),mf.group(4).upper(),mf.group(5)
         if 6 <= len(d1) <= 8 and len(d2) == 3:
             info["matricule_fiscal"] = f"{d1}{l1}/{l2}/{l3}/{d2}"
 
-    # Tel / Fax
     m = re.search(r'T[eé]l[:\.\s/]*(\d[\d\s\.\-]{6,14}\d)', text, re.I)
     if m: info["tel"] = re.sub(r'[\s\.\-]','', m.group(1))
-
     m = re.search(r'Fax[:\.\s]*([\d][\d\s\.\-]{6,14}\d)', text, re.I)
     if m: info["fax"] = re.sub(r'[\s\.\-]','', m.group(1))
-
-    # Email
     m = re.search(r'[\w\.-]+@[\w\.-]+\.\w{2,}', text)
     if m: info["email"] = m.group(0)
-
-    # RC
     m = re.search(r'R\.?C\.?\s*[:\-]?\s*([A-Z][A-Z0-9]{5,14})', text, re.I)
     if m: info["rc"] = m.group(1)
 
-    # Address — detected from header text
     addr = extract_address(text)
-    if addr:
-        info["adresse"] = addr
+    if addr: info["adresse"] = addr
 
-    # Totals
-    for field, keywords in {
-        "total_ht":  ["total ht", "total hors taxe", "montant ht", "total net ht"],
-        "tva":       [" tva ", "t.v.a", "valeur tva"],
-        "total_ttc": ["total ttc", "net à payer", "montant ttc"],
+    for field, kws in {
+        "total_ht":  ["total ht","total hors taxe","montant ht","total net ht"],
+        "tva":       [" tva ","t.v.a","valeur tva"],
+        "total_ttc": ["total ttc","net à payer","montant ttc"],
     }.items():
-        for kw in keywords:
+        for kw in kws:
             if kw in (" " + text.lower() + " "):
                 nums = re.findall(r'\d[\d,\.\s]{0,15}\d|\b\d{1,8}\b', text)
                 if nums:
                     val = _to_float(nums[-1])
-                    if val and 0.01 < val < 50_000_000:
-                        info[field] = val
+                    if val and 0.01 < val < 50_000_000: info[field] = val
                 break
-
     return {k: v for k, v in info.items() if v}
 
 
-def _to_float(s):
-    if not s: return None
-    s = str(s).strip()
-    s = re.sub(r'[^\d,.]','', s)
-    if not s: return None
-    if ',' in s and '.' in s:
-        s = s.replace(',','') if s.rfind('.')>s.rfind(',') else s.replace('.','').replace(',','.')
-    elif ',' in s:
-        parts = s.split(',')
-        s = s.replace(',','.') if len(parts)==2 and len(parts[1])<=3 else s.replace(',','')
-    try: return round(float(s), 3)
-    except: return None
-
-
-def extract_product_lines(text: str) -> list:
-    """
-    Extract product line items from OCR text using regex.
-
-    HOW IT WORKS:
-      1. Strip leading OCR noise (|, ., -, spaces) so rows prefixed by table-border
-         characters are not missed.
-      2. Match a product code at line start — 6-digit numeric (e.g. 302463) OR
-         letter-prefixed alphanumeric (e.g. PF001300001, PH00174).
-      3. If a second alphanumeric code follows immediately, store it as code_article.
-      4. If a standalone integer sits between the code and the drug name, treat it
-         as the quantity (prefix qty pattern, e.g. "300390  30  ADEX 2,5MG...").
-      5. Designation ends at the first price-sentinel (digit + comma/dot + 2+ digits).
-      6. Quantity fallback: look for an integer at the very END of the designation
-         zone, then in the price zone.
-    """
-    items = []
-    seen  = set()
-
-    # Pre-compiled patterns
+def extract_product_lines(text):
+    items = []; seen = set()
     CODE_PCT   = re.compile(r'^([A-Z]{2,4}\d{2,12}|\d{6})', re.IGNORECASE)
     CODE_ART   = re.compile(r'^([A-Z]{2,4}\d{5,12})\b',     re.IGNORECASE)
     QTY_PFX    = re.compile(r'^(\d{1,5})[\s\|,;._~\-]+(?=[A-Za-z])')
@@ -555,68 +457,44 @@ def extract_product_lines(text: str) -> list:
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line:
-            continue
-
-        # ── Step 1: Strip leading OCR noise ──────────────────────────────
+        if not line: continue
         line = re.sub(r'^[\|.\-\s]+', '', line).strip()
-        if not line or len(line) < 5:
-            continue
-
-        # ── Step 2: Match product code ────────────────────────────────────
+        if not line or len(line) < 5: continue
         m_code = CODE_PCT.match(line)
-        if not m_code:
-            continue
+        if not m_code: continue
         code = m_code.group(1).upper()
-        if code in seen:
-            continue
-
+        if code in seen: continue
         rest = line[len(m_code.group(0)):].strip()
-        if len(rest) < 2:
-            continue
+        if len(rest) < 2: continue
 
-        # ── Step 3: Optional second code (code_article) ───────────────────
         code_article = None
         m_art = CODE_ART.match(rest)
         if m_art:
             code_article = m_art.group(1).upper()
             rest = rest[len(code_article):].strip().lstrip('-').strip()
 
-        # ── Step 4: Detect quantity PREFIX before the drug name ───────────
-        # Strip leading OCR noise (parens, pipes, quotes, apostrophes) first
-        # so "| 30 | ADEX..." → "30 | ADEX..."  "'50 BIGMAG" → "50 BIGMAG"
         rest = re.sub(r"^[\|\.'\"()\[\]\-\s]+", '', rest).strip()
-        # Strip a long spurious leading number (OCR column bleed, e.g. "160" in
-        # "(160 7 TRAMADIS...") when a 1-3 digit qty follows it before a letter.
         rest = re.sub(r'^\d{3,}\s+(?=\d{1,3}[\s\|,;._~\-]+[A-Za-z])', '', rest)
-        if not rest:
-            continue
+        if not rest: continue
         qty_prefix = None
         m_pfx = QTY_PFX.match(rest)
         if m_pfx:
             v = int(m_pfx.group(1))
             if 1 <= v <= 99999:
-                qty_prefix = float(v)
-                rest = rest[m_pfx.end():].strip()
+                qty_prefix = float(v); rest = rest[m_pfx.end():].strip()
 
-        # ── Step 5: Split at first price sentinel ─────────────────────────
         price_m = PRICE_STOP.search(rest)
         if price_m:
             designation_zone = rest[:price_m.start()].strip()
             price_zone       = rest[price_m.start():]
         else:
-            designation_zone = rest
-            price_zone       = ""
+            designation_zone = rest; price_zone = ""
 
-        # Clean designation
         desc = re.sub(r'^[\|,;.\-\s]+', '', designation_zone).strip()
-        desc = re.sub(r'[\|,;.\-\s]+$',  '', desc).strip()
-        desc = re.sub(r'\s*\|\s*', ' ',   desc).strip()
+        desc = re.sub(r'[\|,;.\-\s]+$', '', desc).strip()
+        desc = re.sub(r'\s*\|\s*', ' ', desc).strip()
+        if not desc or len(desc) < 3: continue
 
-        if not desc or len(desc) < 3:
-            continue
-
-        # ── Step 6: Quantity fallback ─────────────────────────────────────
         qty = qty_prefix
         if not qty:
             for qm in QTY_END.finditer(designation_zone):
@@ -624,29 +502,21 @@ def extract_product_lines(text: str) -> list:
                 if 1 <= v <= 99999:
                     tail = designation_zone[qm.start():].strip()
                     if re.fullmatch(r'\d{1,5}', tail):
-                        qty  = float(v)
-                        desc = designation_zone[:qm.start()].strip()
-                        desc = re.sub(r'^[\|,;.\-\s]+|[\|,;.\-\s]+$', '', desc).strip()
+                        qty = float(v)
+                        desc = re.sub(r'^[\|,;.\-\s]+|[\|,;.\-\s]+$', '',
+                                      designation_zone[:qm.start()].strip()).strip()
                         break
             if not qty and price_zone:
                 for qm in QTY_END.finditer(price_zone):
                     v = int(qm.group(1))
-                    if 1 <= v <= 99999:
-                        qty = float(v)
-                        break
+                    if 1 <= v <= 99999: qty = float(v); break
 
-        if not desc or len(desc) < 3:
-            continue
-
-        # ── Step 7: Build item ────────────────────────────────────────────
+        if not desc or len(desc) < 3: continue
         seen.add(code)
         item = {"code": code, "designation": desc}
-        if code_article:
-            item["code_article"] = code_article
-        if qty:
-            item["quantite"] = qty
+        if code_article: item["code_article"] = code_article
+        if qty:          item["quantite"] = qty
         items.append(item)
-
     return items
 
 
@@ -654,15 +524,12 @@ def extract_product_lines(text: str) -> list:
 # PDF → IMAGE
 # ═══════════════════════════════════════════════════════════════════════════
 
-def pdf_page_to_image(pdf_path: str, page_index: int, dpi: int = 300) -> np.ndarray:
-    """Render a PDF page to a high-resolution image for OCR."""
+def pdf_page_to_image(pdf_path, page_index, dpi=300):
     doc  = fitz.open(pdf_path)
     page = doc[page_index]
-    mat  = fitz.Matrix(dpi/72, dpi/72)   # 300 DPI for best OCR quality
+    mat  = fitz.Matrix(dpi/72, dpi/72)
     pix  = page.get_pixmap(matrix=mat, alpha=False)
-    img  = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-        pix.height, pix.width, pix.n
-    )
+    img  = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     return cv2.cvtColor(img, cv2.COLOR_RGB2BGR if pix.n==3 else cv2.COLOR_RGBA2BGR)
 
 
@@ -673,19 +540,15 @@ def pdf_page_to_image(pdf_path: str, page_index: int, dpi: int = 300) -> np.ndar
 with st.sidebar:
     st.markdown("## ⚙️ Options")
     st.markdown("---")
-
     st.markdown("**Preprocessing**")
-    use_fix_rotation  = st.checkbox("Fix Rotation",      value=True)
-    use_erase_color   = st.checkbox("Erase Colored Ink", value=True)
-    use_remove_lines  = st.checkbox("Remove Borders",    value=True)
-    use_keep_mask     = st.checkbox("Blob Filter (CV)",  value=True)
-
+    use_fix_rotation = st.checkbox("Fix Rotation",      value=True)
+    use_erase_color  = st.checkbox("Erase Colored Ink", value=True)
+    use_remove_lines = st.checkbox("Remove Borders",    value=True)
+    use_keep_mask    = st.checkbox("Blob Filter (CV)",  value=True)
     st.markdown("---")
     st.markdown("**OCR**")
-    split_zones = st.checkbox("Split Header / Body OCR", value=True,
-        help="Uses different Tesseract configs for header vs table area")
+    split_zones = st.checkbox("Split Header / Body OCR", value=True)
     show_raw    = st.checkbox("Show Raw OCR Text",       value=False)
-
     st.markdown("---")
     st.markdown("**Output**")
     show_tables   = st.checkbox("Show pdfplumber Tables", value=True)
@@ -706,7 +569,6 @@ uploaded = st.file_uploader(
     type=["pdf", "png", "jpg", "jpeg"],
     label_visibility="collapsed"
 )
-
 run_btn = st.button("▶  Run Pipeline", use_container_width=True)
 
 if not uploaded:
@@ -722,20 +584,39 @@ if not uploaded:
 
 if uploaded and run_btn:
 
-    is_pdf = uploaded.type == "application/pdf"
+    # ── Pipeline log: initialise + place placeholder at top of page ────
+    _log_init()
+    _log_ph = st.empty()     # single placeholder re-rendered at each step
+    _log_render(_log_ph)
 
-    # Save to temp file (needed by fitz and pdfplumber)
+    is_pdf = uploaded.type == "application/pdf"
     suffix = ".pdf" if is_pdf else Path(uploaded.name).suffix
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded.read())
         tmp_path = tmp.name
 
-    # ── Detect PDF type ────────────────────────────────────────────────
+    # ── Step 1: Load ───────────────────────────────────────────────────
+    file_kb = round(len(uploaded.getvalue()) / 1024, 1)
+    _log_set("load", "done", f"{uploaded.name}  ({file_kb} KB)")
+    _log_render(_log_ph)
+
+    # ── Step 2: Detect type ────────────────────────────────────────────
     if is_pdf:
+        _log_set("detect", "running", "reading PDF…")
+        _log_render(_log_ph)
         is_native   = detect_pdf_native(tmp_path)
         doc_fitz    = fitz.open(tmp_path)
         total_pages = len(doc_fitz)
+        _log_set("detect", "done",
+                 f"{'Native' if is_native else 'Scanned'} PDF  —  {total_pages} page(s)")
+        _log_render(_log_ph)
+    else:
+        is_native   = False
+        total_pages = 1
+        _log_set("detect", "done", f"Image file  —  1 page")
+        _log_render(_log_ph)
 
+    if is_pdf:
         col_type, col_pages = st.columns([2, 1])
         with col_type:
             color = "#7ee8a2" if is_native else "#e8c87e"
@@ -752,144 +633,181 @@ if uploaded and run_btn:
                 <div class='metric-label'>Pages</div>
                 <div class='metric-value'>{total_pages}</div>
             </div>""", unsafe_allow_html=True)
-    else:
-        is_native   = False
-        total_pages = 1
 
     st.markdown("---")
 
     # ═══════════════════════════════════════════════════════════════════
-    # PROCESS ALL PAGES — preprocess + OCR every page starting from page 1
+    # PROCESS ALL PAGES
     # ═══════════════════════════════════════════════════════════════════
 
-    all_header_texts  = []   # per-page header OCR text
-    all_body_texts    = []   # per-page body OCR text
-    all_full_texts    = []   # per-page full OCR text
-    all_clean_imgs    = []   # per-page cleaned image for display
-    all_orig_imgs     = []   # per-page original image for display
-    all_product_lines = []   # accumulated across all pages
+    all_header_texts  = []
+    all_body_texts    = []
+    all_full_texts    = []
+    all_clean_imgs    = []
+    all_orig_imgs     = []
+    all_product_lines = []
     seen_codes        = set()
 
     prog = st.progress(0, text="Processing pages…")
 
     for page_i in range(total_pages):
-        # Load raw image for this page
+
+        # ── Step 3: Preprocess ─────────────────────────────────────────
+        _log_set("preprocess", "running",
+                 f"page {page_i+1}/{total_pages}  |  "
+                 f"rotation={use_fix_rotation}  color={use_erase_color}  "
+                 f"lines={use_remove_lines}  blob={use_keep_mask}")
+        _log_render(_log_ph)
+        _pp_t0 = _time.time()
+
         if is_pdf:
             img_bgr = pdf_page_to_image(tmp_path, page_i, dpi=300)
         else:
             file_bytes = np.frombuffer(uploaded.getvalue(), dtype=np.uint8)
             img_bgr    = cv2.imdecode(file_bytes, 1)
 
-        # Store original for side-by-side display
-        orig_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        all_orig_imgs.append(orig_rgb)
+        all_orig_imgs.append(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
 
-        # Preprocess — respects sidebar toggles
         work = img_bgr.copy()
         if use_fix_rotation: work = fix_rotation(work)
         if use_erase_color:  work = erase_colored_ink(work)
         gray   = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
         binary = binarize(gray)
         if use_remove_lines: binary = remove_long_lines(binary)
-        if use_keep_mask:
-            km    = build_keep_mask(binary)
-            clean = enhance_kept_text(binary, km)
-        else:
-            clean = binary
-
+        if use_keep_mask:    clean  = enhance_kept_text(binary, build_keep_mask(binary))
+        else:                clean  = binary
         all_clean_imgs.append(clean)
 
-        # OCR
+        _log_set("preprocess", "done",
+                 f"{total_pages} page(s) cleaned", t0=_pp_t0)
+        _log_render(_log_ph)
+
+        # ── Step 4: OCR ────────────────────────────────────────────────
+        _log_set("ocr", "running",
+                 f"page {page_i+1}/{total_pages}  |  "
+                 f"LSTM  split={split_zones}")
+        _log_render(_log_ph)
+        _ocr_t0 = _time.time()
+
         if split_zones:
             h_text = clean_ocr_text(ocr_header_zone(clean))
             b_text = clean_ocr_text(ocr_body_zone(clean))
             f_text = h_text + "\n" + b_text
         else:
             f_text = clean_ocr_text(ocr_full_page(clean))
-            h_text = f_text
-            b_text = f_text
+            h_text = b_text = f_text
 
         all_header_texts.append(h_text)
         all_body_texts.append(b_text)
         all_full_texts.append(f_text)
 
-        # Collect product lines; deduplicate by code across all pages
+        _log_set("ocr", "done",
+                 f"{total_pages} page(s)  |  {len(f_text.split())} words", t0=_ocr_t0)
+        _log_render(_log_ph)
+
+        # ── Step 5: Product lines (per page) ───────────────────────────
+        _log_set("products", "running",
+                 f"page {page_i+1}/{total_pages}  |  scanning product codes…")
+        _log_render(_log_ph)
+
         if show_products:
             for item in extract_product_lines(b_text):
                 code = item.get("code", "")
                 if code and code not in seen_codes:
-                    seen_codes.add(code)
-                    all_product_lines.append(item)
+                    seen_codes.add(code); all_product_lines.append(item)
                 elif not code:
                     all_product_lines.append(item)
 
-        prog.progress(
-            (page_i + 1) / total_pages,
-            text=f"Processing page {page_i + 1} / {total_pages}…"
-        )
+        _log_set("products", "done",
+                 f"{len(all_product_lines)} unique product line(s) so far")
+        _log_render(_log_ph)
+
+        prog.progress((page_i+1)/total_pages,
+                      text=f"Processing page {page_i+1} / {total_pages}…")
 
     prog.empty()
 
-    # Combined text (all pages, from page 1 onwards) for regex extraction
     combined_full   = "\n\n".join(all_full_texts)
     combined_header = "\n\n".join(all_header_texts)
 
-    # ── pdfplumber tables (native only, all pages) ────────────────────
+    # ── Step 6: pdfplumber ─────────────────────────────────────────────
     plumber_tables = []
     if is_pdf and is_native and show_tables:
+        _log_set("pdfplumber", "running", "reading PDF vector table data…")
+        _log_render(_log_ph)
+        _pl_t0 = _time.time()
         with st.spinner("Extracting tables with pdfplumber…"):
             plumber_tables = extract_tables_pdfplumber(tmp_path)
+        _log_set("pdfplumber", "done",
+                 f"{len(plumber_tables)} table(s) found", t0=_pl_t0)
+        _log_render(_log_ph)
+    else:
+        reason = "scanned PDF — OCR used" if (is_pdf and not is_native) \
+            else "image file" if not is_pdf \
+            else "disabled in sidebar"
+        _log_set("pdfplumber", "skip", reason)
+        _log_render(_log_ph)
 
-    # ── Regex extraction on combined text from ALL pages ──────────────
+    # ── Step 7: Regex extraction ───────────────────────────────────────
+    _log_set("regex", "running",
+             f"scanning {len(combined_full.split())} words  |  "
+             f"MF · date · tel · doc number · address…")
+    _log_render(_log_ph)
+    _rx_t0 = _time.time()
+
     extracted_info = extract_info(combined_full)
-    # Address: prefer page-1 header for cleaner results; fallback to combined
     addr_p1 = extract_address(all_header_texts[0])
-    if addr_p1:
-        extracted_info["adresse"] = addr_p1
+    if addr_p1: extracted_info["adresse"] = addr_p1
 
-    # ════════════════════════════════════════════════════════════════════
-    # DISPLAY: ALL PAGES — original + cleaned side by side
-    # ════════════════════════════════════════════════════════════════════
+    _log_set("regex", "done",
+             f"type={extracted_info.get('type','?')}  "
+             f"date={extracted_info.get('date','—')}  "
+             f"MF={extracted_info.get('matricule_fiscal','—')}",
+             t0=_rx_t0)
+    _log_render(_log_ph)
+
+    # ── Step 8: Done ───────────────────────────────────────────────────
+    _log_set("done", "done",
+             f"{total_pages} page(s) processed  |  "
+             f"{len(all_product_lines)} items  |  "
+             f"{len(plumber_tables)} tables")
+    _log_render(_log_ph)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # DISPLAY: ALL PAGES
+    # ═══════════════════════════════════════════════════════════════════
 
     st.markdown("## 🖼️ Pages — Original & Cleaned")
     for page_i, (orig_img, clean_img) in enumerate(zip(all_orig_imgs, all_clean_imgs)):
-        label = f"Page {page_i + 1} / {total_pages}" if total_pages > 1 else "Document"
+        label = f"Page {page_i+1} / {total_pages}" if total_pages > 1 else "Document"
         st.markdown(f"<div class='page-label'>{label}</div>", unsafe_allow_html=True)
-        col_orig, col_clean = st.columns(2)
-        with col_orig:
-            st.markdown(
-                "<div style='font-family:JetBrains Mono;font-size:11px;color:#888;"
-                "text-align:center;margin-bottom:4px'>📷 Original</div>",
-                unsafe_allow_html=True
-            )
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("<div style='font-family:JetBrains Mono;font-size:11px;color:#888;"
+                        "text-align:center;margin-bottom:4px'>📷 Original</div>",
+                        unsafe_allow_html=True)
             st.image(orig_img, use_container_width=True)
-        with col_clean:
-            st.markdown(
-                "<div style='font-family:JetBrains Mono;font-size:11px;color:#7ee8a2;"
-                "text-align:center;margin-bottom:4px'>✨ After Cleaning</div>",
-                unsafe_allow_html=True
-            )
+        with c2:
+            st.markdown("<div style='font-family:JetBrains Mono;font-size:11px;color:#7ee8a2;"
+                        "text-align:center;margin-bottom:4px'>✨ After Cleaning</div>",
+                        unsafe_allow_html=True)
             st.image(clean_img, use_container_width=True)
-        if page_i < len(all_clean_imgs) - 1:
-            st.markdown(
-                "<hr style='border-color:#1e2130;margin:12px 0;'>",
-                unsafe_allow_html=True
-            )
+        if page_i < len(all_clean_imgs)-1:
+            st.markdown("<hr style='border-color:#1e2130;margin:12px 0;'>",
+                        unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # ════════════════════════════════════════════════════════════════════
-    # DISPLAY RESULTS
-    # ════════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
+    # RESULTS
+    # ═══════════════════════════════════════════════════════════════════
 
-    # Document type badge
     dtype     = extracted_info.get("type", "Document")
-    tag_class = {"Bon de Commande": "tag-bc", "Proforma": "tag-proforma",
-                 "Facture": "tag-facture"}.get(dtype, "tag-stat")
+    tag_class = {"Bon de Commande":"tag-bc","Proforma":"tag-proforma",
+                 "Facture":"tag-facture"}.get(dtype, "tag-stat")
     st.markdown(f"<span class='{tag_class}'>{dtype}</span>", unsafe_allow_html=True)
     st.markdown("## 📋 Extracted Information")
 
-    # Info grid — 3 columns, includes Type de document
     info_cols = st.columns(3)
     fields = [
         ("Type de document",  extracted_info.get("type",             "—")),
@@ -911,7 +829,6 @@ if uploaded and run_btn:
                 <div class='metric-value' style='font-size:14px'>{value}</div>
             </div>""", unsafe_allow_html=True)
 
-    # Address — full-width card when detected
     if extracted_info.get("adresse"):
         st.markdown(f"""
         <div class='metric-card' style='margin-top:6px'>
@@ -921,103 +838,85 @@ if uploaded and run_btn:
             </div>
         </div>""", unsafe_allow_html=True)
 
-    # ── Product lines ─────────────────────────────────────────────────
+    # Product lines
     if show_products and all_product_lines:
         st.markdown(f"## 📦 Product Lines ({len(all_product_lines)} items)")
-        table_html = "<div class='table-container'><table><thead><tr>"
-        table_html += "<th>#</th><th>Code</th><th>Designation</th><th>Quantity</th>"
-        table_html += "</tr></thead><tbody>"
+        tbl = "<div class='table-container'><table><thead><tr>"
+        tbl += "<th>#</th><th>Code</th><th>Designation</th><th>Quantity</th>"
+        tbl += "</tr></thead><tbody>"
         for i, item in enumerate(all_product_lines, 1):
             qty = item.get("quantite", "—")
-            qty_str = f"{qty:.0f}" if isinstance(qty, float) else str(qty)
-            table_html += f"""<tr>
-                <td style='color:#555'>{i}</td>
-                <td style='color:#7ee8a2'>{item.get('code','')}</td>
-                <td>{item.get('designation','')}</td>
-                <td style='text-align:right;color:#e8c87e'>{qty_str}</td>
-            </tr>"""
-        table_html += "</tbody></table></div>"
-        st.markdown(table_html, unsafe_allow_html=True)
+            qty_s = f"{qty:.0f}" if isinstance(qty, float) else str(qty)
+            tbl += (f"<tr><td style='color:#555'>{i}</td>"
+                    f"<td style='color:#7ee8a2'>{item.get('code','')}</td>"
+                    f"<td>{item.get('designation','')}</td>"
+                    f"<td style='text-align:right;color:#e8c87e'>{qty_s}</td></tr>")
+        tbl += "</tbody></table></div>"
+        st.markdown(tbl, unsafe_allow_html=True)
     elif show_products:
-        st.info("No product lines detected by regex. Enable 'Show Raw OCR Text' to debug.")
+        st.info("No product lines detected. Enable 'Show Raw OCR Text' to debug.")
 
-    # ── pdfplumber tables ─────────────────────────────────────────────
+    # pdfplumber tables
     if plumber_tables:
         st.markdown(f"## 🗃️ pdfplumber Tables ({len(plumber_tables)} found)")
         for t_idx, table in enumerate(plumber_tables):
-            st.markdown(f"**Table {t_idx+1}**")
             if not table: continue
-            headers = table[0]
-            rows    = table[1:]
-            table_html = "<div class='table-container'><table><thead><tr>"
-            for h in headers:
-                table_html += f"<th>{h}</th>"
-            table_html += "</tr></thead><tbody>"
-            for row in rows:
-                table_html += "<tr>"
-                for cell in row:
-                    table_html += f"<td>{cell}</td>"
-                table_html += "</tr>"
-            table_html += "</tbody></table></div>"
-            st.markdown(table_html, unsafe_allow_html=True)
+            st.markdown(f"**Table {t_idx+1}**")
+            tbl = "<div class='table-container'><table><thead><tr>"
+            for h in table[0]:
+                tbl += f"<th>{str(h).replace('&','&amp;').replace('<','&lt;')}</th>"
+            tbl += "</tr></thead><tbody>"
+            for row in table[1:]:
+                if any(str(c).strip() for c in row):
+                    tbl += "<tr>"
+                    for cell in row:
+                        tbl += f"<td>{str(cell).replace('&','&amp;').replace('<','&lt;')}</td>"
+                    tbl += "</tr>"
+            tbl += "</tbody></table></div>"
+            st.markdown(tbl, unsafe_allow_html=True)
             st.markdown("")
 
-    # ── Raw OCR text (per page, collapsible) ──────────────────────────
+    # Raw OCR
     if show_raw:
         st.markdown("## 📝 Raw OCR Text")
         for page_i in range(total_pages):
-            label = f"Page {page_i + 1}" if total_pages > 1 else "Full text"
+            label = f"Page {page_i+1}" if total_pages > 1 else "Full text"
             with st.expander(label, expanded=(page_i == 0)):
                 if split_zones:
                     c1, c2 = st.columns(2)
                     with c1:
                         st.markdown("**Header zone**")
-                        st.markdown(
-                            f"<div class='raw-text'>{all_header_texts[page_i]}</div>",
-                            unsafe_allow_html=True)
+                        st.markdown(f"<div class='raw-text'>{all_header_texts[page_i]}</div>",
+                                    unsafe_allow_html=True)
                     with c2:
                         st.markdown("**Body zone**")
-                        st.markdown(
-                            f"<div class='raw-text'>{all_body_texts[page_i]}</div>",
-                            unsafe_allow_html=True)
+                        st.markdown(f"<div class='raw-text'>{all_body_texts[page_i]}</div>",
+                                    unsafe_allow_html=True)
                 else:
-                    st.markdown(
-                        f"<div class='raw-text'>{all_full_texts[page_i]}</div>",
-                        unsafe_allow_html=True)
+                    st.markdown(f"<div class='raw-text'>{all_full_texts[page_i]}</div>",
+                                unsafe_allow_html=True)
 
-    # ── Full JSON ─────────────────────────────────────────────────────
+    # Full JSON
     if show_json:
-        result = {
-            "informations_document": extracted_info,
-            "ligne_articles":        all_product_lines,
-        }
         st.markdown("## 🗂️ Full JSON")
-        st.json(result)
+        st.json({"informations_document": extracted_info,
+                 "ligne_articles": all_product_lines})
 
-    # ── Download ───────────────────────────────────────────────────────
+    # Downloads
     st.markdown("---")
-    col_dl1, col_dl2 = st.columns(2)
-    with col_dl1:
-        result_json = json.dumps({
-            "informations_document": extracted_info,
-            "ligne_articles":        all_product_lines,
-        }, ensure_ascii=False, indent=2)
-        st.download_button(
-            "⬇ Download JSON",
-            data=result_json,
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("⬇ Download JSON",
+            data=json.dumps({"informations_document": extracted_info,
+                             "ligne_articles": all_product_lines},
+                            ensure_ascii=False, indent=2),
             file_name=f"{Path(uploaded.name).stem}_extracted.json",
-            mime="application/json",
-            use_container_width=True
-        )
-    with col_dl2:
-        st.download_button(
-            "⬇ Download OCR Text",
+            mime="application/json", use_container_width=True)
+    with c2:
+        st.download_button("⬇ Download OCR Text",
             data=combined_full,
             file_name=f"{Path(uploaded.name).stem}_ocr.txt",
-            mime="text/plain",
-            use_container_width=True
-        )
+            mime="text/plain", use_container_width=True)
 
-    # Cleanup temp file
     try: os.unlink(tmp_path)
     except: pass
