@@ -1,13 +1,15 @@
-"""
-Invoice OCR Pipeline — v4.4
+﻿"""
+Invoice OCR Pipeline — v4.2
 ════════════════════════════
-v4.4:
-  • Doc type: NLP no longer overwrites a specific regex type (e.g. Bon de Commande).
-  • MF: search full page-1 text; no truncation at Code FRS (fixes wrong/missing MF when
-    OCR column order differs); OCR confusions i:/l: for M.F; back-fill for JSON/UI.
-  • Product lines: parsed from full-page OCR per page (not body-only) so table rows in
-    the top band are not dropped; 5–8 digit numeric codes; qty fallback from line ints.
-v4.3: title-adjacent doc N°; MF compact form; product dedupe relaxed; header crop.
+Fixes over v4.1:
+  • fix_rotation — removed minAreaRect fine-skew entirely (was tilting straight pages).
+    Only Tesseract OSD (90/180/270 flips) is kept. Real documents are never
+    more than 1-2° off and minAreaRect was over-correcting from logo/stamp pixels.
+  • render_info_grid now used for ALL metric cards → no more raw HTML tags visible.
+  • Confidence badges: now hidden by default; sidebar toggle explains what they are.
+  • Doc N° catches "NNN/YYYY" line below document title (e.g. "445 / 2023").
+  • MF extracted from header zone only (fournisseur block, top-left of page 1).
+  • DPI selector (150/200/300, default 200) for ~40% speed gain over 300.
 """
 
 import streamlit as st
@@ -326,23 +328,17 @@ def nlp_enrich(regex_info: dict, text: str, header_text: str, nlp):
     confidence = {}
     warnings   = []
 
-    # 1. Doc type — keep regex classification when it is specific; NLP often
-    #    mislabels invoices (e.g. Bon de commande → Proforma) and must not erase type.
+    # 1. Doc type
     nlp_type, type_conf = _fuzzy_doc_type(text)
-    regex_type = regex_info.get("type", "Document")
+    regex_type = regex_info.get("type","Document")
     if regex_type == "Document" and nlp_type != "Document":
-        enriched["type"] = nlp_type
-        confidence["type"] = type_conf
+        enriched["type"] = nlp_type; confidence["type"] = type_conf
     elif nlp_type == regex_type:
         confidence["type"] = max(type_conf, 0.90)
     else:
-        if regex_type != "Document":
-            enriched["type"] = regex_type
-            confidence["type"] = max(0.88, type_conf * 0.5)
-        else:
-            confidence["type"] = type_conf
-            if type_conf > 0.80 and nlp_type != "Document":
-                enriched["type"] = nlp_type
+        confidence["type"] = type_conf
+        if type_conf > 0.80 and nlp_type != "Document":
+            enriched["type"] = nlp_type
 
     # 2. Date
     raw_date = regex_info.get("date","")
@@ -557,14 +553,12 @@ def ocr_full_page(img):
 
 def ocr_header_zone(img):
     h=img.shape[0]
-    # Top ~38%: keeps centered doc title + line below (e.g. "445 / 2023") and
-    # fournisseur M.F. under the address without pushing too far into the table.
-    return pytesseract.image_to_string(img[:int(h * 0.38), :],
+    return pytesseract.image_to_string(img[:int(h*0.30),:],
                                        lang="fra+eng", config="--psm 4 --oem 1").strip()
 
 def ocr_body_zone(img):
     h=img.shape[0]
-    return pytesseract.image_to_string(img[int(h*0.20):int(h*0.92),:],
+    return pytesseract.image_to_string(img[int(h*0.22):int(h*0.92),:],
                                        lang="fra+eng", config="--psm 6 --oem 1").strip()
 
 def clean_ocr_text(text):
@@ -693,202 +687,6 @@ def _to_float(s):
     except: return None
 
 
-def _page1_block(combined: str) -> str:
-    """First page OCR when pages are joined with \\n\\n."""
-    if not combined:
-        return ""
-    parts = combined.split("\n\n")
-    return parts[0].strip() if parts else combined.strip()
-
-
-def _normalize_doc_num(raw: str) -> str:
-    s = re.sub(r"\s+", "", (raw or "").strip())
-    s = s.strip(".,;:")
-    return s
-
-
-def _is_plausible_doc_num(s: str) -> bool:
-    if not s or len(s) < 5:
-        return False
-    m = re.fullmatch(r"(\d{1,6})/(\d{4})", s)
-    if not m:
-        return False
-    year = int(m.group(2))
-    return 1990 <= year <= 2035
-
-
-def extract_numero_document(text: str) -> str:
-    """
-    Find document reference like 445/2023: often directly under the doc title,
-    or on the same line (OCR layout varies). Ignores Page N°, Code PCT, etc.
-    """
-    head = text[:8000] if len(text) > 8000 else text
-
-    # 1) Explicit labels (high precision)
-    labeled = [
-        r"(?:doc(?:ument)?|bon|facture|commande)\s+n[°o]\s*[:\s]*(\d{1,6}\s*/\s*\d{4})",
-        r"r[ée]f(?:[ée]rence)?\.?\s*[:\s]*(\d{1,6}\s*/\s*\d{4})",
-        r"n[°o]\s*(?:du\s+)?(?:bon|document|facture)\s*[:\s]*(\d{1,6}\s*/\s*\d{4})",
-    ]
-    for pat in labeled:
-        m = re.search(pat, head, re.IGNORECASE)
-        if m:
-            n = _normalize_doc_num(m.group(1))
-            if _is_plausible_doc_num(n):
-                return n
-
-    # 2) Title-adjacent: same line OR next 1–3 lines after a known heading
-    title_rx = re.compile(
-        r"(bon\s+de\s+(?:commande|livraison)|"
-        r"facture(?:\s+d['’]?\s*accompagnement)?|"
-        r"proforma|avoir|"
-        r"note\s+de\s+(?:cr[eé]dit|d[eé]bit)|"
-        r"commande\s+fournisseur)",
-        re.IGNORECASE,
-    )
-    m = title_rx.search(head)
-    if m:
-        after = head[m.end() : m.end() + 220]
-        # Same physical line (before newline)
-        line0 = after.split("\n", 1)[0]
-        for mm in re.finditer(r"\b(\d{1,6}\s*/\s*\d{4})\b", line0):
-            if re.search(r"page|pct|code\s*pct", line0[: mm.start()], re.I):
-                continue
-            n = _normalize_doc_num(mm.group(1))
-            if _is_plausible_doc_num(n):
-                return n
-        # Following lines (title often stacked above the number)
-        chunk = after
-        for mm in re.finditer(r"(?m)^\s*(\d{1,6}\s*/\s*\d{4})\s*$", chunk):
-            ctx = chunk[max(0, mm.start() - 80) : mm.end() + 40]
-            if re.search(r"page\s+n|code\s+pct|sfax\s+le", ctx, re.I):
-                continue
-            n = _normalize_doc_num(mm.group(1))
-            if _is_plausible_doc_num(n):
-                return n
-        for mm in re.finditer(r"\b(\d{1,6}\s*/\s*\d{4})\b", chunk):
-            ctx = chunk[max(0, mm.start() - 100) : mm.end() + 60]
-            if re.search(r"page\s+n|code\s+pct|sfax\s+le", ctx, re.I):
-                continue
-            n = _normalize_doc_num(mm.group(1))
-            if _is_plausible_doc_num(n):
-                return n
-
-    return ""
-
-
-def _format_mf_from_groups(d1: str, l1: str, l2: str, l3: str, d2: str) -> str:
-    return f"{d1}{l1.upper()}/{l2.upper()}/{l3.upper()}/{d2}"
-
-
-def _mf_from_compact_match(m: re.Match) -> str:
-    d1, letters, d2 = m.group(1), m.group(2).upper(), m.group(3)
-    if len(letters) == 3 and len(d2) == 3 and 6 <= len(d1) <= 8:
-        return _format_mf_from_groups(d1, letters[0], letters[1], letters[2], d2)
-    return ""
-
-
-def extract_supplier_matricule_fiscal(mf_zone: str) -> str:
-    """
-    Tunisian MF (fournisseur): compact/spaced forms. OCR order varies — do not
-    truncate at 'Code FRS' (client block sometimes appears first in reading order).
-    Prefer matches in text *before* the first 'Code FRS', else first valid MF line
-    that is not on the same line as 'Code FRS'.
-    """
-    if not mf_zone:
-        return ""
-
-    # Spaced: M.F : 01286496 E / A / M / 000
-    _MF_SPACED = re.compile(
-        r"M\.?F\.?\s*[:\-]?\s*"
-        r"(\d{6,8})[/\\|\s]?([A-Z])[/\\|\s]?([A-Z])[/\\|\s]?([A-Z])[/\\|\s]?(\d{3})\b",
-        re.IGNORECASE,
-    )
-    _MF_COMPACT = re.compile(
-        r"M\.?F\.?\s*[:\-]?\s*(\d{6,8})([A-Z]{3})(\d{3})\b",
-        re.IGNORECASE,
-    )
-    # OCR reads M.F as I: / l: / 1: (common on scans)
-    _MF_OCR_CONFUSE = re.compile(
-        r"(?:^|[\s|])([iIl1])\s*[:\.;]\s*(\d{6,8})([A-Z]{3})(\d{3})\b",
-        re.IGNORECASE,
-    )
-    _LOOSE = re.compile(
-        r"M\.?F\.?\s*[:\-]?\s*([0-9A-Z]{10,18})\b",
-        re.IGNORECASE,
-    )
-
-    def _try_line(ln: str) -> str:
-        if re.search(r"\bcode\s+frs\b", ln, re.I):
-            return ""
-        m = _MF_SPACED.search(ln)
-        if m:
-            d1, a, b, c, d2 = (
-                m.group(1),
-                m.group(2),
-                m.group(3),
-                m.group(4),
-                m.group(5),
-            )
-            if 6 <= len(d1) <= 8 and len(d2) == 3:
-                return _format_mf_from_groups(d1, a, b, c, d2)
-        m = _MF_COMPACT.search(ln)
-        if m:
-            s = _mf_from_compact_match(m)
-            if s:
-                return s
-        m = _MF_OCR_CONFUSE.search(ln)
-        if m:
-            d1, letters, d2 = m.group(2), m.group(3).upper(), m.group(4)
-            if len(letters) == 3 and len(d2) == 3 and 6 <= len(d1) <= 8:
-                return _format_mf_from_groups(
-                    d1, letters[0], letters[1], letters[2], d2
-                )
-        m = _LOOSE.search(ln)
-        if m:
-            raw = re.sub(r"[^0-9A-Za-z]", "", m.group(1))
-            mc = re.fullmatch(r"(\d{6,8})([A-Z]{3})(\d{3})", raw, re.I)
-            if mc:
-                L = mc.group(2).upper()
-                return f"{mc.group(1)}{L[0]}/{L[1]}/{L[2]}/{mc.group(3)}"
-        return ""
-
-    lines = [ln.strip() for ln in mf_zone.splitlines() if ln.strip()]
-    cf_i = next(
-        (i for i, ln in enumerate(lines) if re.match(r"^code\s+frs\b", ln, re.I)),
-        None,
-    )
-
-    # 1) Lines strictly before first 'Code FRS' heading (supplier column)
-    if cf_i is not None and cf_i > 0:
-        for ln in lines[:cf_i]:
-            got = _try_line(ln)
-            if got:
-                return got
-
-    # 2) Any line (except same-line as Code FRS) — handles reversed column OCR
-    for ln in lines:
-        got = _try_line(ln)
-        if got:
-            return got
-
-    # 3) Whole-text search before first 'Code FRS' substring (multiline layouts)
-    cf_m = re.search(r"\bcode\s+frs\b", mf_zone, re.I)
-    head = mf_zone[: cf_m.start()] if cf_m else mf_zone
-    for rx in (_MF_COMPACT, _MF_SPACED):
-        m = rx.search(head)
-        if m:
-            if rx is _MF_COMPACT:
-                s = _mf_from_compact_match(m)
-            else:
-                s = _format_mf_from_groups(
-                    m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
-                )
-            if s:
-                return s
-    return ""
-
-
 def extract_info(text: str, header_text: str) -> dict:
     """
     Regex baseline.
@@ -900,39 +698,45 @@ def extract_info(text: str, header_text: str) -> dict:
     info={}
     info["type"]=detect_doc_type(text)
 
-    # Doc number — title-adjacent + labeled patterns first (see extract_numero_document).
-    num = extract_numero_document(text)
-    if num:
-        info["numero"] = num
-    if not info.get("numero"):
-        for pat in [
-            r"PROFORMA\s+N[°o][:\s]*([A-Z0-9\-]{6,25})",
-            r"Commande\s+(?:Fournisseur\s+)?N[°o][:\s]*(\d{4,10})",
-            r"N[°o]\s*Facture[:\s]*([A-Z0-9\-]{4,20})",
-            r"Facture\s+num[eé]ro\s+([0-9\s]{3,15})",
-            r"\b(BCN-\d{2}-\d{4})\b",
-            r"\b(BCM?-\d{2}-\d{4})\b",
-            r"(?:bon\s+de\s+commande|proforma|facture|commande)[^\n]{0,50}\n\s*(\d{2,6}\s*/\s*\d{4})",
-            r"(?:bon\s+de\s+commande|bon\s+de\s+livraison|facture|proforma)\s+(\d{1,6}\s*/\s*\d{4})\b",
-        ]:
-            m = re.search(pat, text, re.IGNORECASE)
-            if m:
-                raw = m.group(1)
-                num = _normalize_doc_num(raw) if "/" in raw else re.sub(r"\s+", "", raw).strip(".,;:")
-                if len(num) >= 3:
-                    info["numero"] = num
-                    break
+    # Doc number — ordered by specificity.
+    # The bare N° fallback is intentionally removed — it matches any
+    # "N°" in the text (Code N°, Page N°, etc.) and produces garbage.
+    for pat in [
+        r'PROFORMA\s+N[°o][:\s]*([A-Z0-9\-]{6,25})',
+        r'Commande\s+(?:Fournisseur\s+)?N[°o][:\s]*(\d{4,10})',
+        r'N[°o]\s*Facture[:\s]*([A-Z0-9\-]{4,20})',
+        r'Facture\s+num[eé]ro\s+([0-9\s]{3,15})',
+        r'\b(BCN-\d{2}-\d{4})\b',
+        r'\b(BCM?-\d{2}-\d{4})\b',
+        # Number on the line immediately below the doc-type heading:
+        # "Bon de commande\n445 / 2023" or "Bon de commande  \n  445/2023"
+        r'(?:bon\s+de\s+commande|proforma|facture|commande)[^\n]{0,40}\n\s*(\d{2,6}\s*/\s*\d{4})',
+    ]:
+        m=re.search(pat, text, re.IGNORECASE)
+        if m:
+            num=re.sub(r'\s+','',m.group(1)).strip(".,;:")
+            if len(num)>=3: info["numero"]=num; break
 
     # Date
     m=re.search(r'Date\s*[:\-]?\s*(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4})',text,re.I)
     if not m: m=re.search(r'\b(\d{2}[/\-\.]\d{2}[/\-\.]\d{4})\b',text)
     if m: info["date"]=m.group(1)
 
-    # MF — full page-1 OCR (header+body); logic inside extract_supplier_matricule_fiscal
-    page1_full = _page1_block(text)
-    mf_val = extract_supplier_matricule_fiscal(page1_full[:12000])
-    if mf_val:
-        info["matricule_fiscal"] = mf_val
+    # MF from header_text only, AND M.F must be at the START of the line.
+    # WHY: The client block has "Nabeul  M.F : 00539219GAM000" — M.F is mid-line.
+    # The fournisseur block has "M.F : 01286496EAM000" — M.F starts the line.
+    # The (?m) flag makes ^ match at each line start, not just the string start.
+    _MF_LINE = re.compile(
+        r'(?m)^\s*M\.?F\.?\s*[:\-]?\s*'
+        r'(\d{6,8})[/\\|\s]?([A-Z])[/\\|\s]?([A-Z])[/\\|\s]?([A-Z])[/\\|\s]?(\d{3})\b',
+        re.IGNORECASE
+    )
+    mf=_MF_LINE.search(header_text)
+    if mf:
+        d1,l1,l2,l3,d2=(mf.group(1),mf.group(2).upper(),mf.group(3).upper(),
+                         mf.group(4).upper(),mf.group(5))
+        if 6<=len(d1)<=8 and len(d2)==3:
+            info["matricule_fiscal"]=f"{d1}{l1}/{l2}/{l3}/{d2}"
 
     # Contact
     m=re.search(r'T[eé]l[:\.\s/]*(\d[\d\s\.\-]{6,14}\d)',text,re.I)
@@ -970,46 +774,16 @@ def extract_info(text: str, header_text: str) -> dict:
                     break
             if field in info: break  # found it, stop trying keywords
 
-    out = {k: v for k, v in info.items() if v}
-    # Never drop document type — empty UI cells when 'if v' stripped a key
-    if not out.get("type"):
-        out["type"] = info.get("type") or detect_doc_type(text)
-    return out
-
-
-def _clean_product_designation(desc: str) -> str:
-    """Strip common OCR/table artifacts from line-item descriptions."""
-    d = (desc or "").strip()
-    d = re.sub(r"^[\|\\/._~\-]+", "", d)
-    d = re.sub(r"[\|\\/._~\-]+$", "", d)
-    d = re.sub(r"^(?:nan|NaN|none|null|\$0[\.,]?\s*|re\s+)\s*", "", d, flags=re.I)
-    d = re.sub(r"\s+(?:cd|id)\s*$", "", d, flags=re.I)
-    d = re.sub(r"\s{2,}", " ", d).strip()
-    return d
-
-
-def _infer_qty_fallback(rest: str):
-    """
-    When qty is not the last token in the description column, take the last
-    standalone integer in the line that is not part of a decimal price.
-    """
-    s = re.sub(r"\b\d{1,6}[,\.]\d{2,3}\b", " ", rest)
-    best = None
-    for m in re.finditer(r"\b(\d{1,5})\b", s):
-        v = int(m.group(1))
-        if 1 <= v <= 99999 and not (1900 <= v <= 2035):
-            best = v
-    return float(best) if best is not None else None
+    return {k:v for k,v in info.items() if v}
 
 
 def extract_product_lines(text):
-    items = []
-    # 5–8 digit numeric codes common in pharma; PFxxxx + 6-digit codes
-    CODE_PCT = re.compile(r"^([A-Z]{2,4}\d{2,12}|\d{5,8})\b", re.IGNORECASE)
-    CODE_ART = re.compile(r"^([A-Z]{2,4}\d{5,12})\b", re.IGNORECASE)
-    QTY_PFX = re.compile(r"^(\d{1,5})[\s\|,;._~\-]+(?=[A-Za-z])")
-    PRICE_STOP = re.compile(r"\b\d{1,6}[,\.]\d{2,3}\b")
-    QTY_END = re.compile(r"\b(\d{1,5})\b")
+    items=[]; seen=set()
+    CODE_PCT  =re.compile(r'^([A-Z]{2,4}\d{2,12}|\d{6})',re.IGNORECASE)
+    CODE_ART  =re.compile(r'^([A-Z]{2,4}\d{5,12})\b',    re.IGNORECASE)
+    QTY_PFX   =re.compile(r'^(\d{1,5})[\s\|,;._~\-]+(?=[A-Za-z])')
+    PRICE_STOP=re.compile(r'\b\d{1,6}[,\.]\d{2,3}\b')
+    QTY_END   =re.compile(r'\b(\d{1,5})\b')
 
     for raw_line in text.splitlines():
         line=raw_line.strip()
@@ -1019,6 +793,7 @@ def extract_product_lines(text):
         m_code=CODE_PCT.match(line)
         if not m_code: continue
         code=m_code.group(1).upper()
+        if code in seen: continue
         rest=line[len(m_code.group(0)):].strip()
         if len(rest)<2: continue
 
@@ -1028,8 +803,12 @@ def extract_product_lines(text):
             code_article=m_art.group(1).upper()
             rest=rest[len(code_article):].strip().lstrip('-').strip()
 
-        rest=re.sub(r"^[\|\.'\"()\[\]\-\s]+",'',rest).strip()
+        # Strip leading OCR garbage characters (add _ to the set)
+        rest=re.sub(r"^[\|\.'\"()\[\]\-_\s]+",'',rest).strip()
+        # Strip 3+ digit column bleed before a small qty+text
         rest=re.sub(r'^\d{3,}\s+(?=\d{1,3}[\s\|,;._~\-]+[A-Za-z])','',rest)
+        # Strip 1-2 digit OCR noise before a real qty+text  (e.g. "0 7 BIGFER" → "7 BIGFER")
+        rest=re.sub(r'^\d{1,2}\s+(?=\d{1,5}[\s\|,;._~\-]+[A-Za-z])','',rest)
         if not rest: continue
         qty_prefix=None
         m_pfx=QTY_PFX.match(rest)
@@ -1037,6 +816,12 @@ def extract_product_lines(text):
             v=int(m_pfx.group(1))
             if 1<=v<=99999:
                 qty_prefix=float(v); rest=rest[m_pfx.end():].strip()
+        else:
+            # Pipe fallback: "garbage 7 | DESIGNATION" (e.g. "_to8 7 | DESIIOR")
+            # Scan for the pattern "N | text" anywhere in rest and use it
+            m_pipe=re.search(r'\b(\d{1,5})\s*\|\s*([A-Za-z].{3,})', rest)
+            if m_pipe:
+                qty_prefix=float(int(m_pipe.group(1))); rest=m_pipe.group(2).strip()
 
         price_m=PRICE_STOP.search(rest)
         dz=rest[:price_m.start()].strip() if price_m else rest
@@ -1046,7 +831,6 @@ def extract_product_lines(text):
         desc=re.sub(r'[\|,;.\-_*~\s]+$','',desc).strip()   # also strips trailing _ * ~
         desc=re.sub(r'\s*\|\s*',' ',desc).strip()
         desc=re.sub(r'\s{2,}',' ',desc).strip()             # collapse double spaces
-        desc = _clean_product_designation(desc)
         if not desc or len(desc)<3: continue
 
         qty=qty_prefix
@@ -1064,13 +848,9 @@ def extract_product_lines(text):
                 for qm in QTY_END.finditer(pz):
                     v=int(qm.group(1))
                     if 1<=v<=99999: qty=float(v); break
-        if not qty:
-            qfb = _infer_qty_fallback(rest)
-            if qfb is not None:
-                qty = qfb
-                desc = re.sub(rf"\s+{int(qfb)}\s*$", "", desc).strip()
 
         if not desc or len(desc)<3: continue
+        seen.add(code)
         item={"code":code,"designation":desc}
         if code_article: item["code_article"]=code_article
         if qty:          item["quantite"]=qty
@@ -1236,7 +1016,7 @@ if uploaded and run_btn:
 
     all_header_texts=[]; all_body_texts=[]; all_full_texts=[]
     all_clean_imgs  =[]; all_orig_imgs =[]
-    all_product_lines=[]
+    all_product_lines=[]; seen_codes=set()
     prog=st.progress(0,text="Processing pages…")
 
     for page_i in range(total_pages):
@@ -1286,9 +1066,12 @@ if uploaded and run_btn:
 
         _log_set("products","running",f"page {page_i+1}/{total_pages}"); _log_render(_log_ph)
         if show_products:
-            # Full-page line text — body-only OCR drops table rows that fall in the top band
-            for item in extract_product_lines(f_text):
-                all_product_lines.append(item)
+            for item in extract_product_lines(b_text):
+                code=item.get("code","")
+                if code and code not in seen_codes:
+                    seen_codes.add(code); all_product_lines.append(item)
+                elif not code:
+                    all_product_lines.append(item)
         _log_set("products","done",f"{len(all_product_lines)} item(s)"); _log_render(_log_ph)
         prog.progress((page_i+1)/total_pages,text=f"Page {page_i+1}/{total_pages}…")
 
@@ -1335,13 +1118,6 @@ if uploaded and run_btn:
     else:
         _log_set("nlp","skip","disabled"); _log_render(_log_ph)
 
-    if not extracted_info.get("type"):
-        extracted_info["type"] = detect_doc_type(combined_full)
-    if not extracted_info.get("matricule_fiscal"):
-        mf_fill = extract_supplier_matricule_fiscal(_page1_block(combined_full)[:12000])
-        if mf_fill:
-            extracted_info["matricule_fiscal"] = mf_fill
-
     _log_set("done","done",
              f"{total_pages} page(s) · {len(all_product_lines)} items · "
              f"{len(plumber_tables)} tables · {len(warnings_nlp)} NLP warn")
@@ -1368,7 +1144,7 @@ if uploaded and run_btn:
 
     st.markdown("---")
 
-    dtype = extracted_info.get("type") or detect_doc_type(combined_full)
+    dtype    =extracted_info.get("type","Document")
     tag_class={"Bon de Commande":"tag-bc","Proforma":"tag-proforma",
                "Facture":"tag-facture"}.get(dtype,"tag-stat")
     st.markdown(f"<span class='{tag_class}'>{dtype}</span>",unsafe_allow_html=True)
@@ -1389,10 +1165,10 @@ if uploaded and run_btn:
 
     # All cards in one HTML block — no raw-tag bug
     fields_to_show=[
-        ("Type de document", "type",            dtype),
+        ("Type de document", "type",            extracted_info.get("type",            "—")),
         ("Document N°",      "numero",           extracted_info.get("numero",          "—")),
         ("Date",             "date",             extracted_info.get("date",            "—")),
-        ("Matricule Fiscal", "matricule_fiscal", extracted_info.get("matricule_fiscal", "—")),
+        ("Matricule Fiscal", "matricule_fiscal", extracted_info.get("matricule_fiscal","—")),
         ("Téléphone",        "tel",              extracted_info.get("tel",             "—")),
         ("Fax",              "fax",              extracted_info.get("fax",             "—")),
         ("Email",            "email",            extracted_info.get("email",           "—")),

@@ -20,6 +20,7 @@ dateparser==1.4.0
 fr_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_sm-3.8.0/fr_core_news_sm-3.8.0-py3-none-any.whl#sha256=7d6ad14cd5078e53147bfbf70fb9d433c6a3865b695fda2657140bbc59a27e29
 gitdb==4.0.12
 GitPython==3.1.46
+greenlet==3.4.0
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
@@ -48,6 +49,7 @@ pydantic_core==2.41.5
 pydeck==0.9.1
 Pygments==2.20.0
 PyMuPDF==1.27.2.2
+PyMySQL==1.1.2
 pypdfium2==5.7.0
 pytesseract==0.3.13
 python-dateutil==2.9.0.post0
@@ -66,6 +68,7 @@ smmap==5.0.3
 spacy==3.8.14
 spacy-legacy==3.0.12
 spacy-loggers==1.0.5
+SQLAlchemy==2.0.49
 srsly==2.5.3
 streamlit==1.56.0
 tenacity==9.1.4

@@ -1,0 +1,11 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: pfe_mysql_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: invoice_intelligence
+      MYSQL_USER: pfe_user
+      MYSQL_PASSWORD: pfepassword
+    ports:
+      - "3306:3306"
