@@ -1,4 +1,4 @@
-"""
+﻿"""
 Invoice OCR Pipeline — v4.2
 ════════════════════════════
 Fixes over v4.1:
@@ -30,12 +30,6 @@ import spacy
 from rapidfuzz import fuzz, process as fuzz_process
 import dateparser
 from datetime import datetime
-from copy import deepcopy
-
-try:
-    from client import ask_structured_json
-except Exception:
-    ask_structured_json = None
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -380,14 +374,8 @@ def nlp_enrich(regex_info: dict, text: str, header_text: str, nlp):
             if nlp_val is not None and abs(regex_val-nlp_val)/(regex_val+1e-9) < 0.01:
                 confidence[field] = 0.95
             elif nlp_val is not None:
-                rel_diff = abs(regex_val - nlp_val) / (regex_val + 1e-9)
-                # Guardrail: NLP can override only when strongly confident and close.
-                if nlp_conf >= 0.88 and rel_diff <= 0.12:
-                    enriched[field] = nlp_val; confidence[field] = nlp_conf
-                    warnings.append(f"{field}: regex={regex_val} vs NLP={nlp_val} — using NLP (high confidence)")
-                else:
-                    confidence[field] = max(0.72, min(0.90, 1.0 - rel_diff))
-                    warnings.append(f"{field}: NLP disagrees (regex={regex_val}, nlp={nlp_val}, conf={nlp_conf}) — keeping regex")
+                enriched[field] = nlp_val; confidence[field] = nlp_conf
+                warnings.append(f"{field}: regex={regex_val} vs NLP={nlp_val} — using NLP")
             else:
                 confidence[field] = 0.70
         elif nlp_val is not None:
@@ -662,273 +650,6 @@ def extract_tables_pdfplumber(pdf_path):
                     if any(c for c in r): clean.append(r)
                 if clean: all_tables.append(clean)
     return all_tables
-
-
-_HEADER_SYNONYMS = {
-    "code_pct": [
-        "code pct", "code ptc", "code", "code produit", "code produit fini"
-    ],
-    "code_article": [
-        "code article", "article code", "ref article", "reference article"
-    ],
-    "designation": [
-        "designation", "designation article", "designation produit", "libelle", "article"
-    ],
-    "unit": [
-        "un", "u", "unite", "unit"
-    ],
-    "quantity": [
-        "qte", "qté", "quantite", "quantity", "qty"
-    ],
-    "unit_price": [
-        "prix unitaire", "p.u", "prix u", "pu", "unit price"
-    ],
-    "amount": [
-        "montant", "mt", "total ligne", "amount", "prix total"
-    ],
-}
-
-
-def _normalize_header_text(s: str) -> str:
-    x = str(s or "").lower().strip()
-    x = re.sub(r'[^a-z0-9\s]', ' ', x)
-    x = re.sub(r'\s+', ' ', x).strip()
-    return x
-
-
-def _map_headers_to_canonical(headers: list[str]) -> tuple[dict, dict]:
-    col_map = {}
-    header_debug = {}
-    for idx, h in enumerate(headers):
-        hn = _normalize_header_text(h)
-        header_debug[idx] = {"raw": h, "normalized": hn, "canonical": ""}
-        for canon, syns in _HEADER_SYNONYMS.items():
-            if any(_normalize_header_text(syn) in hn or hn in _normalize_header_text(syn) for syn in syns):
-                if canon not in col_map:
-                    col_map[canon] = idx
-                    header_debug[idx]["canonical"] = canon
-                break
-    return col_map, header_debug
-
-
-def _to_float_soft(v):
-    try:
-        return _to_float(str(v))
-    except Exception:
-        return None
-
-
-def extract_line_items_from_tables(tables: list) -> tuple[list, dict]:
-    items = []
-    audit = {
-        "detected_headers": [],
-        "column_map": {},
-        "row_rejections": [],
-        "structured_item_count": 0
-    }
-    seen = set()
-    for t_idx, table in enumerate(tables or []):
-        if not table or len(table) < 2:
-            continue
-        headers = [str(x or "").strip() for x in table[0]]
-        col_map, header_debug = _map_headers_to_canonical(headers)
-        if not col_map:
-            continue
-        audit["detected_headers"].append({"table_index": t_idx, "headers": headers})
-        audit["column_map"][str(t_idx)] = {k: int(v) for k, v in col_map.items()}
-
-        for r_idx, row in enumerate(table[1:], start=1):
-            if not any(str(c or "").strip() for c in row):
-                continue
-            get = lambda canon: str(row[col_map[canon]]).strip() if canon in col_map and col_map[canon] < len(row) else ""
-            code = get("code_pct") or get("code_article")
-            designation = get("designation")
-            if not code:
-                # fallback: first code-like token in row
-                row_txt = " ".join(str(c or "") for c in row)
-                m = re.search(r'\b([A-Z]{2,4}\d{2,12}|\d{6})\b', row_txt, re.I)
-                code = m.group(1).upper() if m else ""
-            if not code:
-                audit["row_rejections"].append({"table_index": t_idx, "row_index": r_idx, "reason": "missing_code"})
-                continue
-            item = {"code": code}
-            if designation:
-                item["designation"] = designation
-            ca = get("code_article")
-            if ca:
-                item["code_article"] = ca
-            un = get("unit")
-            if un:
-                item["unite"] = un
-            q = _to_float_soft(get("quantity"))
-            if q is not None and 0 < q < 100000:
-                item["quantite"] = q
-                item["qty_source"] = "table_structured"
-            else:
-                audit["row_rejections"].append({"table_index": t_idx, "row_index": r_idx, "code": code, "reason": "missing_qty_column"})
-            pu = _to_float_soft(get("unit_price"))
-            if pu is not None:
-                item["prix_unitaire"] = pu
-            mt = _to_float_soft(get("amount"))
-            if mt is not None:
-                item["montant"] = mt
-
-            if code not in seen:
-                seen.add(code)
-                items.append(item)
-    audit["structured_item_count"] = len(items)
-    return items, audit
-
-
-def merge_line_items(primary_items: list, fallback_items: list) -> list:
-    merged = []
-    seen = set()
-    fb_by_code = {str(i.get("code", "")).upper(): i for i in (fallback_items or []) if i.get("code")}
-    for p in primary_items or []:
-        code = str(p.get("code", "")).upper()
-        base = deepcopy(fb_by_code.get(code, {}))
-        base.update(p)
-        merged.append(base)
-        if code:
-            seen.add(code)
-    for f in fallback_items or []:
-        code = str(f.get("code", "")).upper()
-        if code and code in seen:
-            continue
-        merged.append(f)
-    return merged
-
-
-def extract_line_items_from_ocr_images(images: list) -> tuple[list, dict]:
-    items = []
-    seen = set()
-    audit = {
-        "detected_headers": [],
-        "column_map": {},
-        "row_rejections": [],
-        "structured_item_count": 0
-    }
-    for pidx, img in enumerate(images or []):
-        data = pytesseract.image_to_data(
-            img, lang="fra+eng", config="--psm 6 --oem 1", output_type=pytesseract.Output.DICT
-        )
-        groups = {}
-        rows = len(data.get("text", []))
-        for i in range(rows):
-            txt = str(data["text"][i] or "").strip()
-            if not txt:
-                continue
-            conf = float(data.get("conf", ["-1"])[i] or -1)
-            if conf < 25:
-                continue
-            key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
-            groups.setdefault(key, []).append({
-                "text": txt,
-                "left": int(data["left"][i]),
-                "top": int(data["top"][i]),
-                "right": int(data["left"][i]) + int(data["width"][i]),
-            })
-        if not groups:
-            continue
-        lines = []
-        for words in groups.values():
-            ws = sorted(words, key=lambda w: w["left"])
-            line_txt = " ".join(w["text"] for w in ws).strip()
-            lines.append({
-                "text": line_txt,
-                "words": ws,
-                "top": min(w["top"] for w in ws)
-            })
-        lines = sorted(lines, key=lambda x: x["top"])
-        if not lines:
-            continue
-
-        header_idx = -1
-        col_map = {}
-        for li, ln in enumerate(lines[:60]):
-            ht = _normalize_header_text(ln["text"])
-            if not any(k in ht for k in ("designation", "qte", "qt", "prix", "montant", "article")):
-                continue
-            temp_map = {}
-            for canon, syns in _HEADER_SYNONYMS.items():
-                for w in ln["words"]:
-                    wn = _normalize_header_text(w["text"])
-                    if any(wn == _normalize_header_text(s) or _normalize_header_text(s) in wn for s in syns):
-                        temp_map[canon] = w["left"]
-                        break
-            if len(temp_map) >= 2 and ("quantity" in temp_map or "designation" in temp_map):
-                header_idx = li
-                col_map = temp_map
-                audit["detected_headers"].append({"page": pidx, "text": ln["text"]})
-                audit["column_map"][f"ocr_page_{pidx}"] = col_map
-                break
-        if header_idx < 0:
-            continue
-
-        qty_x = col_map.get("quantity")
-        amount_x = col_map.get("amount")
-        pu_x = col_map.get("unit_price")
-        des_x = col_map.get("designation")
-
-        for li in range(header_idx + 1, len(lines)):
-            ln = lines[li]
-            code_word = None
-            for w in ln["words"]:
-                if re.fullmatch(r'[A-Z]{2,4}\d{2,12}|\d{6}', w["text"], re.I):
-                    code_word = w
-                    break
-            if not code_word:
-                continue
-            code = code_word["text"].upper()
-            if code in seen:
-                continue
-            item = {"code": code}
-
-            if des_x is not None:
-                des_parts = [w["text"] for w in ln["words"] if w["left"] >= des_x - 20 and (qty_x is None or w["left"] < qty_x - 8)]
-                if des_parts:
-                    item["designation"] = " ".join(des_parts).strip()
-
-            num_words = []
-            for w in ln["words"]:
-                if re.fullmatch(r'\d{1,5}', w["text"]):
-                    num_words.append((w["left"], float(w["text"])))
-            if qty_x is not None and num_words:
-                near = sorted(num_words, key=lambda x: abs(x[0] - qty_x))
-                qv = near[0][1]
-                if 0 < qv < 100000:
-                    item["quantite"] = qv
-                    item["qty_source"] = "ocr_xband"
-
-            def pick_decimal(x_target):
-                if x_target is None:
-                    return None
-                cands = []
-                for w in ln["words"]:
-                    t = w["text"].replace(",", ".")
-                    if re.fullmatch(r'\d{1,7}\.\d{2,3}', t):
-                        cands.append((abs(w["left"] - x_target), _to_float_soft(t)))
-                if not cands:
-                    return None
-                cands = [c for c in cands if c[1] is not None]
-                if not cands:
-                    return None
-                cands.sort(key=lambda x: x[0])
-                return cands[0][1]
-
-            pu = pick_decimal(pu_x)
-            mt = pick_decimal(amount_x)
-            if pu is not None:
-                item["prix_unitaire"] = pu
-            if mt is not None:
-                item["montant"] = mt
-            if "quantite" not in item:
-                audit["row_rejections"].append({"page": pidx, "code": code, "reason": "missing_qty_column"})
-
-            seen.add(code)
-            items.append(item)
-    audit["structured_item_count"] = len(items)
-    return items, audit
 
 def detect_pdf_native(pdf_path):
     with pdfplumber.open(pdf_path) as pdf:
@@ -1304,27 +1025,6 @@ def _extract_numero_with_repair(text: str) -> tuple[str, dict]:
         (r'\b([A-Z0-9]{3,6}\s*/\s*\d{4})\b', "generic_ratio", 0.40),
     ]
     best = None
-    lines = [ln.strip() for ln in text.splitlines()]
-
-    # Priority pass: heading-adjacent "Bon de commande" + next line ratio (e.g. 445/2023).
-    for i, ln in enumerate(lines):
-        if not re.search(r'bon\s+de\s+commande', ln, re.I):
-            continue
-        for j in (i + 1, i + 2):
-            if j >= len(lines):
-                continue
-            m = re.search(r'([A-Z0-9]{2,6}\s*/\s*\d{4})', lines[j], re.I)
-            if not m:
-                continue
-            raw = re.sub(r'\s+', '', m.group(1)).strip(".,;:")
-            fixed, repaired = _repair_numero_token(raw)
-            if not re.match(r'^\d{2,6}/\d{4}$', fixed):
-                trace["numero_reject_reasons"].append({"candidate": raw, "reason": "shape_invalid", "source": "title_adjacent_scan"})
-                continue
-            cand = {"raw": raw, "fixed": fixed, "repaired": repaired, "source": "title_adjacent_scan", "score": 1.12}
-            trace["numero_candidate_list"].append(cand)
-            if best is None or cand["score"] > best["score"]:
-                best = cand
     for pat, source, base_score in patterns:
         for m in re.finditer(pat, text, re.IGNORECASE):
             raw = re.sub(r'\s+', '', m.group(1)).strip(".,;:")
@@ -1339,17 +1039,10 @@ def _extract_numero_with_repair(text: str) -> tuple[str, dict]:
                 continue
             # Reject month/year-like candidates unless strongly anchored to a label/title.
             mm = re.match(r'^(\d{2})/(\d{4})$', fixed)
-            if mm and 1 <= int(mm.group(1)) <= 12 and source not in ("labeled_inline", "title_next_line", "title_adjacent_scan"):
+            if mm and 1 <= int(mm.group(1)) <= 12 and source not in ("labeled_inline", "title_next_line"):
                 trace["numero_reject_reasons"].append({"candidate": fixed, "reason": "month_year_like", "source": source})
                 continue
             score = base_score + (0.08 if repaired else 0.0) + (0.12 if re.match(r'^\d{3,6}/\d{4}$', fixed) else 0.0)
-            ratio_m = re.match(r'^(\d{2,6})/(\d{4})$', fixed)
-            if ratio_m:
-                head_num = int(ratio_m.group(1))
-                if head_num > 12:
-                    score += 0.20
-                else:
-                    score -= 0.15
             cand = {"raw": raw, "fixed": fixed, "repaired": repaired, "source": source, "score": round(score, 3)}
             trace["numero_candidate_list"].append(cand)
             if best is None or cand["score"] > best["score"]:
@@ -1510,23 +1203,6 @@ def extract_product_lines(text):
 
         qty=qty_prefix
         qty_source = "prefix" if qty_prefix else ""
-        qty_candidates = []
-        if not qty:
-            # Row-structure-aware quantity: prefer column-like numeric chunks.
-            chunks = [c.strip() for c in re.split(r'\s{2,}|\|', raw_line) if c.strip()]
-            if len(chunks) >= 3:
-                for idx, c in enumerate(chunks):
-                    if not re.fullmatch(r'\d{1,5}', c):
-                        continue
-                    v = int(c)
-                    prev = chunks[idx-1].lower() if idx > 0 else ""
-                    if re.search(r'\b(bt|bte|cp|g[eé]lules|amp|fl)\b', prev):
-                        qty_trace.append({"code": code, "reason": "qty_rejected_packsize_like", "candidate": v})
-                        continue
-                    qty_candidates.append(v)
-                if qty_candidates:
-                    qty = float(qty_candidates[0])
-                    qty_source = "row_column"
         if not qty:
             for qm in QTY_END.finditer(dz):
                 v=int(qm.group(1))
@@ -1541,12 +1217,10 @@ def extract_product_lines(text):
                         desc=re.sub(r'^[\|,;.\-\s]+|[\|,;.\-\s]+$','',
                                     dz[:qm.start()].strip()).strip()
                         break
-                    if packsize_like:
-                        qty_trace.append({"code": code, "reason": "qty_rejected_packsize_like", "candidate": v})
             if not qty and pz:
                 for qm in QTY_END.finditer(pz):
                     v=int(qm.group(1))
-                    if 1<=v<=99999 and (("|" in raw_line) or (len(re.findall(r'\s{2,}', raw_line)) >= 2)):
+                    if 1<=v<=99999:
                         qty=float(v)
                         qty_source = "price_zone"
                         break
@@ -1565,270 +1239,6 @@ def extract_product_lines(text):
             item["qty_source"] = qty_source
         items.append(item)
     return items, qty_trace
-
-
-def build_rejected_candidates(extraction_trace: dict, qty_trace: list) -> dict:
-    groups = {
-        "mf": [],
-        "amount": [],
-        "contact": [],
-        "numero": [],
-        "quantity": []
-    }
-    for r in extraction_trace.get("rejections", []):
-        k = r.get("kind", "other")
-        if k in groups:
-            groups[k].append(r)
-    numero_rejects = extraction_trace.get("selected", {}).get("numero_reject_reasons", [])
-    for r in numero_rejects:
-        groups["numero"].append({
-            "kind": "numero",
-            "candidate": r.get("candidate", ""),
-            "reason": r.get("reason", ""),
-            "source": r.get("source", "")
-        })
-    for q in qty_trace or []:
-        groups["quantity"].append({
-            "kind": "quantity",
-            "code": q.get("code", ""),
-            "reason": q.get("reason", "")
-        })
-    return groups
-
-
-def _is_valid_mf(v: str) -> bool:
-    return bool(re.match(r'^\d{6,8}[A-Z]/[A-Z]/[A-Z]/\d{3}$', str(v or "").strip()))
-
-
-def _is_valid_numero(v: str, doc_type: str = "") -> bool:
-    s = str(v or "").strip().upper()
-    if doc_type.lower().startswith("proforma"):
-        if re.match(r'^[A-Z]{2,8}-[A-Z]{2,8}-\d{4,12}$', s):
-            return True
-    return bool(
-        re.match(r'^\d{3,6}/\d{4}$', s) or
-        re.match(r'^(BCN|BCM|FAC|PRO|CMD|INV)[\-/][A-Z0-9]{2}[\-/]\d{4}$', s) or
-        re.match(r'^[A-Z]{2,5}[0-9\-/]{3,20}$', s)
-    )
-
-
-def _is_valid_amount(v) -> bool:
-    try:
-        f = float(v)
-    except Exception:
-        return False
-    return 0 < f < 50_000_000
-
-
-def assemble_llm_evidence(
-    all_full_texts: list,
-    all_header_texts: list,
-    all_body_texts: list,
-    product_lines: list,
-    qty_missing_examples: list,
-    extraction_trace: dict,
-    table_extraction_audit: dict | None = None,
-    token_char_limit: int = 100000
-) -> dict:
-    full_text = "\n\n".join(all_full_texts or [])
-    page1_full = (all_full_texts[0] if all_full_texts else "")
-    page1_header = (all_header_texts[0] if all_header_texts else "")
-    page1_body = (all_body_texts[0] if all_body_texts else "")
-
-    unresolved_codes = {str(x.get("code", "")).upper() for x in (qty_missing_examples or []) if x.get("code")}
-    unresolved_rows = [r for r in (product_lines or []) if str(r.get("code", "")).upper() in unresolved_codes][:40]
-    amount_context = extraction_trace.get("amount_candidates", {})
-    table_context = table_extraction_audit or extraction_trace.get("table_extraction", {})
-    numero_context = {
-        "selected": extraction_trace.get("selected", {}).get("numero", ""),
-        "candidates": extraction_trace.get("selected", {}).get("numero_candidate_list", []),
-        "rejects": extraction_trace.get("selected", {}).get("numero_reject_reasons", []),
-    }
-
-    candidate_blob = json.dumps({
-        "page1_header": page1_header[:3500],
-        "page1_body": page1_body[:6000],
-        "unresolved_rows": unresolved_rows,
-        "amount_context": amount_context,
-        "numero_context": numero_context,
-        "table_extraction": table_context
-    }, ensure_ascii=False)
-
-    # Approximate token budget with 4 chars/token.
-    char_budget = token_char_limit * 4
-    if len(full_text) <= char_budget:
-        evidence_mode = "full_text"
-        ocr_context = full_text
-        truncated = False
-    elif len(page1_full) + len(candidate_blob) <= char_budget:
-        evidence_mode = "page1_targeted"
-        ocr_context = (page1_full + "\n\n" + candidate_blob)
-        truncated = False
-    else:
-        evidence_mode = "targeted_only"
-        ocr_context = candidate_blob[:char_budget]
-        truncated = len(candidate_blob) > len(ocr_context)
-
-    evidence_chars = len(ocr_context)
-    estimated_tokens = max(1, evidence_chars // 4)
-    return {
-        "evidence_mode": evidence_mode,
-        "ocr_context": ocr_context,
-        "table_row_context": unresolved_rows,
-        "amount_conflict_context": amount_context,
-        "numero_context": numero_context,
-        "evidence_chars": evidence_chars,
-        "estimated_tokens": estimated_tokens,
-        "truncated": truncated
-    }
-
-
-def build_llm_prompt(extracted_info: dict, confidence: dict, rejected_candidates: dict, qty_missing_examples: list, evidence_bundle: dict) -> str:
-    payload = {
-        "task": "Validate and suggest corrections for invoice extraction. Output JSON only.",
-        "rules": {
-            "keep_existing_when_uncertain": True,
-            "provide_confidence_0_to_1": True,
-            "fields": ["numero", "supplier_mf", "client_mf", "total_ht", "tva", "total_ttc", "line_item_quantities"]
-        },
-        "base": extracted_info,
-        "confidence": confidence,
-        "rejected_candidates": rejected_candidates,
-        "qty_missing_examples": qty_missing_examples[:30],
-        "ocr_context": evidence_bundle.get("ocr_context", ""),
-        "table_row_context": evidence_bundle.get("table_row_context", []),
-        "amount_conflict_context": evidence_bundle.get("amount_conflict_context", {}),
-        "numero_context": evidence_bundle.get("numero_context", {}),
-        "evidence_meta": {
-            "evidence_mode": evidence_bundle.get("evidence_mode", "targeted_only"),
-            "evidence_chars": evidence_bundle.get("evidence_chars", 0),
-            "estimated_tokens": evidence_bundle.get("estimated_tokens", 0),
-            "truncated": evidence_bundle.get("truncated", False)
-        },
-        "output_schema": {
-            "field_suggestions": {
-                "numero": {"value": "", "confidence": 0.0, "reason": ""},
-                "supplier_mf": {"value": "", "confidence": 0.0, "reason": ""},
-                "client_mf": {"value": "", "confidence": 0.0, "reason": ""},
-                "total_ht": {"value": None, "confidence": 0.0, "reason": ""},
-                "tva": {"value": None, "confidence": 0.0, "reason": ""},
-                "total_ttc": {"value": None, "confidence": 0.0, "reason": ""}
-            },
-            "line_item_quantity_suggestions": [
-                {"code": "", "quantite": None, "confidence": 0.0, "reason": ""}
-            ]
-        }
-    }
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def validate_and_promote(extracted_info: dict, product_lines: list, llm_result: dict, qty_missing_examples: list) -> tuple[dict, list, dict]:
-    promoted = deepcopy(extracted_info)
-    promoted_lines = deepcopy(product_lines)
-    decisions = {"fields": {}, "line_items": []}
-    if not llm_result.get("ok"):
-        decisions["llm_status"] = "failed"
-        decisions["error"] = llm_result.get("error", "unknown_error")
-        return promoted, promoted_lines, decisions
-
-    parsed = llm_result.get("parsed_json") or {}
-    suggestions = parsed.get("field_suggestions", {})
-    doc_type = str(extracted_info.get("type", ""))
-    for field in ("numero", "supplier_mf", "client_mf", "total_ht", "tva", "total_ttc"):
-        s = suggestions.get(field) or {}
-        val = s.get("value")
-        conf = float(s.get("confidence", 0.0) or 0.0)
-        reason = s.get("reason", "")
-        action = "kept_base"
-        if val not in (None, "", "—") and conf >= 0.86:
-            valid = (
-                _is_valid_numero(val, doc_type=doc_type) if field == "numero" else
-                _is_valid_mf(val) if field in ("supplier_mf", "client_mf") else
-                _is_valid_amount(val)
-            )
-            if valid:
-                # Cross-field guard for totals
-                if field in ("total_ht", "tva", "total_ttc"):
-                    tmp = deepcopy(promoted)
-                    tmp[field] = float(val)
-                    if {"total_ht", "tva", "total_ttc"}.issubset(tmp):
-                        err = abs((tmp["total_ht"] + tmp["tva"]) - tmp["total_ttc"])
-                        if err > max(3.0, 0.05 * tmp["total_ttc"]):
-                            action = "rejected_by_consistency"
-                        else:
-                            promoted[field] = float(val); action = "promoted"
-                    else:
-                        promoted[field] = float(val); action = "promoted"
-                else:
-                    promoted[field] = str(val).strip(); action = "promoted"
-            else:
-                action = "rejected_by_format"
-        elif val not in (None, "", "—") and conf < 0.86:
-            action = "insufficient_llm_confidence"
-        decisions["fields"][field] = {
-            "action": action,
-            "base_value": extracted_info.get(field),
-            "llm_value": val,
-            "llm_confidence": conf,
-            "decision_reason": reason
-        }
-
-    # quantity arbitration
-    q_sugs = parsed.get("line_item_quantity_suggestions", [])
-    unresolved_codes = {str(x.get("code", "")).upper() for x in (qty_missing_examples or []) if x.get("code")}
-    by_code = {str(i.get("code", "")).upper(): idx for idx, i in enumerate(promoted_lines)}
-    for q in q_sugs:
-        code = str(q.get("code", "")).upper().strip()
-        conf = float(q.get("confidence", 0.0) or 0.0)
-        qv = q.get("quantite")
-        reason = q.get("reason", "")
-        action = "kept_base"
-        if code and code in by_code and code in unresolved_codes and qv is not None and conf >= 0.90:
-            try:
-                qf = float(qv)
-            except Exception:
-                qf = None
-            if qf is not None and 1 <= qf <= 100000:
-                # Row evidence check: same code row must exist and have a non-empty designation.
-                row = promoted_lines[by_code[code]]
-                if not str(row.get("designation", "")).strip():
-                    action = "insufficient_row_evidence"
-                else:
-                    pu = row.get("prix_unitaire")
-                    mt = row.get("montant")
-                    if pu is not None and mt is not None:
-                        try:
-                            pu_f = float(pu); mt_f = float(mt)
-                            err = abs((qf * pu_f) - mt_f)
-                            if err > max(2.0, 0.10 * max(1.0, mt_f)):
-                                action = "rejected_by_consistency"
-                                decisions["line_items"].append({
-                                    "code": code,
-                                    "action": action,
-                                    "llm_value": qv,
-                                    "llm_confidence": conf,
-                                    "decision_reason": "quantity*unit_price inconsistent with row amount"
-                                })
-                                continue
-                        except Exception:
-                            pass
-                    promoted_lines[by_code[code]]["quantite"] = qf
-                    promoted_lines[by_code[code]]["qty_source"] = "llm_promoted"
-                    action = "promoted"
-            else:
-                action = "rejected_by_format"
-        elif code and code in by_code and code in unresolved_codes and qv is not None and conf < 0.90:
-            action = "insufficient_llm_confidence"
-        decisions["line_items"].append({
-            "code": code,
-            "action": action,
-            "llm_value": qv,
-            "llm_confidence": conf,
-            "decision_reason": reason
-        })
-
-    decisions["llm_status"] = "ok"
-    return promoted, promoted_lines, decisions
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2076,13 +1486,6 @@ if uploaded and run_btn:
     combined_header="\n\n".join(all_header_texts)
 
     plumber_tables=[]
-    table_extraction_audit = {
-        "detected_headers": [],
-        "column_map": {},
-        "row_rejections": [],
-        "structured_item_count": 0,
-        "strategy": "fallback_regex_only"
-    }
     if is_pdf and is_native and show_tables:
         _log_set("pdfplumber","running","reading vector tables…"); _log_render(_log_ph)
         _pl_t0=_time.time()
@@ -2095,25 +1498,6 @@ if uploaded and run_btn:
                 else "image file" if not is_pdf else "disabled")
         _log_set("pdfplumber","skip",reason); _log_render(_log_ph)
 
-    # Structured table extraction as primary line-item source when available.
-    structured_items, table_extraction_audit = extract_line_items_from_tables(plumber_tables)
-    if not structured_items:
-        ocr_structured_items, ocr_audit = extract_line_items_from_ocr_images(all_clean_imgs)
-        if ocr_structured_items:
-            structured_items = ocr_structured_items
-            table_extraction_audit = ocr_audit
-            table_extraction_audit["strategy"] = "ocr_xband_structured_primary_with_regex_fallback"
-    if structured_items:
-        table_extraction_audit["strategy"] = table_extraction_audit.get("strategy") or "structured_primary_with_regex_fallback"
-        if table_extraction_audit["strategy"] == "fallback_regex_only":
-            table_extraction_audit["strategy"] = "structured_primary_with_regex_fallback"
-        all_product_lines = merge_line_items(structured_items, all_product_lines)
-        all_qty_trace = [
-            {"code": str(i.get("code", "")), "reason": "missing_qty_column"}
-            for i in all_product_lines
-            if "quantite" not in i
-        ]
-
     _log_set("regex","running",f"{len(combined_full.split())} words"); _log_render(_log_ph)
     _rx_t0=_time.time()
     # Pass header_text so MF search stays in fournisseur zone (top-left)
@@ -2122,7 +1506,6 @@ if uploaded and run_btn:
         "missing_count": len(all_qty_trace),
         "missing_examples": all_qty_trace[:20]
     }
-    extraction_trace["table_extraction"] = table_extraction_audit
     _log_set("regex","done",
              f"type={regex_info.get('type','?')}  date={regex_info.get('date','—')}  "
              f"fields={len(regex_info)}",t0=_rx_t0)
@@ -2144,40 +1527,6 @@ if uploaded and run_btn:
         _log_render(_log_ph)
     else:
         _log_set("nlp","skip","disabled"); _log_render(_log_ph)
-
-    # Always-on LLM second pass (if client module available).
-    rejected_candidates = build_rejected_candidates(extraction_trace, all_qty_trace)
-    llm_validation = {
-        "llm_status": "skipped",
-        "prompt_size": 0,
-        "response_text": "",
-        "parsed_suggestions": None
-    }
-    promotion_decisions = {"fields": {}, "line_items": [], "llm_status": "skipped"}
-
-    if ask_structured_json is not None:
-        evidence_bundle = assemble_llm_evidence(
-            all_full_texts, all_header_texts, all_body_texts,
-            all_product_lines, all_qty_trace, extraction_trace, table_extraction_audit
-        )
-        llm_prompt = build_llm_prompt(extracted_info, confidence, rejected_candidates, all_qty_trace, evidence_bundle)
-        llm_validation["prompt_size"] = len(llm_prompt)
-        llm_validation["evidence_mode"] = evidence_bundle.get("evidence_mode", "targeted_only")
-        llm_validation["evidence_chars"] = evidence_bundle.get("evidence_chars", 0)
-        llm_validation["estimated_tokens"] = evidence_bundle.get("estimated_tokens", 0)
-        llm_validation["evidence_truncated"] = evidence_bundle.get("truncated", False)
-        llm_result = ask_structured_json(llm_prompt, retries=1, timeout_s=45, max_response_chars=120000)
-        llm_validation["llm_status"] = "ok" if llm_result.get("ok") else "failed"
-        llm_validation["response_text"] = llm_result.get("response_text", "")
-        llm_validation["parsed_suggestions"] = llm_result.get("parsed_json")
-        llm_validation["response_truncated"] = llm_result.get("truncated", False)
-        llm_validation["response_chars"] = llm_result.get("response_chars", 0)
-        extracted_info, all_product_lines, promotion_decisions = validate_and_promote(
-            extracted_info, all_product_lines, llm_result, all_qty_trace
-        )
-    else:
-        llm_validation["llm_status"] = "client_unavailable"
-        promotion_decisions["llm_status"] = "client_unavailable"
 
     _log_set("done","done",
              f"{total_pages} page(s) · {len(all_product_lines)} items · "
@@ -2311,10 +1660,6 @@ if uploaded and run_btn:
             "confidence":            confidence,
             "validation_warnings":   warnings_nlp,
             "extraction_trace":      extraction_trace,
-            "table_extraction":      table_extraction_audit,
-            "rejected_candidates":   rejected_candidates,
-            "llm_validation":        llm_validation,
-            "promotion_decisions":   promotion_decisions,
             "ligne_articles":        all_product_lines,
             "nlp_model":             nlp_model_name,
         })
@@ -2334,10 +1679,6 @@ if uploaded and run_btn:
                 "confidence":            confidence,
                 "validation_warnings":   warnings_nlp,
                 "extraction_trace":      extraction_trace,
-                "table_extraction":      table_extraction_audit,
-                "rejected_candidates":   rejected_candidates,
-                "llm_validation":        llm_validation,
-                "promotion_decisions":   promotion_decisions,
                 "ligne_articles":        all_product_lines,
                 "nlp_model":             nlp_model_name,
             },ensure_ascii=False,indent=2),
